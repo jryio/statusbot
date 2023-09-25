@@ -7,6 +7,20 @@ This bot is written using the [Rust](https://rust-lang.org) programming language
 and was primarily an effort to restore status-ing order to the world as well as
 to learn Rust.
 
+### Installing
+
+[Install Rust](https://www.rust-lang.org/learn/get-started) via `rustup`
+
+```sh
+# Latest version of rust 
+rustup update 
+
+# Download and build this crate and its dependencies defined in Cargo.toml
+cargo build
+
+# Rust goes brrrr
+cargo run
+```
 
 ### Zulip API
 
