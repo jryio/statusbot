@@ -166,9 +166,10 @@ pub struct OutgoingWebhook {
 * { "content": "Hey, your status has been upated" }
 *
 * The content field should contain Zulip-format Markdown.
-
-Note that an outgoing webhook bot can use the Zulip REST API with its API key in case your bot
-needs to do something else, like add an emoji reaction or upload a file.
+* Note that an outgoing webhook bot can use the Zulip REST API with its API key in case your bot
+* needs to do something else, like add an emoji reaction or upload a file.
 *
 * https://recurse.zulipchat.com/api/outgoing-webhooks#replying-with-a-message
+*
+* https://zulip.com/help/format-your-message-using-markdown
 */

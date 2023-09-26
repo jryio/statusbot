@@ -19,7 +19,16 @@ rustup update
 cargo build
 
 # Rust goes brrrr
-cargo run
+RUST_LOG=trace cargo run
+```
+
+**Testing Locally**
+
+* With the webserver running locally we can send a `POST` request using Zulip's
+  example outgoing webhook data stored in `webhook.json`
+
+```sh
+curl -X POST -H "Content-Type: application/json" -d @./webhook.json 127.0.0.1:8080/status
 ```
 
 ### Zulip API
@@ -36,7 +45,7 @@ simple enough in Rust.
 
 [Virtual RC has an API](https://docs.rctogether.com/#introduction) for things like pet bots, maze bots, and all sorts of other things. We will be using it to update the status.
 
-To authenticate with Virtual RC, we need to first create an app at [example.rctogether.com/apps] where we obtain:
+To authenticate with Virtual RC, we need to first [create an app] at [example.rctogether.com/apps] where we obtain:
 
 1. An `app_id`
 2. An `app_secret`
