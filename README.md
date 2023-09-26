@@ -32,6 +32,30 @@ Zulip's [ Outgoing Webhooks
 when Status Bot has been mentioned. Parsing and processing this JSON will be
 simple enough in Rust.
 
+### Virtual RC API
+
+[Virtual RC has an API](https://docs.rctogether.com/#introduction) for things like pet bots, maze bots, and all sorts of other things. We will be using it to update the status.
+
+To authenticate with Virtual RC, we need to first create an app at [example.rctogether.com/apps] where we obtain:
+
+1. An `app_id`
+2. An `app_secret`
+
+All API requests will be made using HTTP basic auth with `username`: `app_id`
+and `password`: `app_secret`. Alternatively we can pass these as URL parameters.
+
+In Virtual RC, each user may optionally have created a [desk](https://docs.rctogether.com/#desk-fields) for themselves.
+Their desk may optionally contain a status which consists of:
+
+1. A optional `status` string
+2. An optional `emoji` of the current status
+3. An optional `expires_at` time at which the current status is removed
+
+
+Virtual RC bots (which use the API) may update their desk's status by using
+[`PATCH api/desks/:id`](https://docs.rctogether.com/#update-a-desk). The bot may
+only update a desk which belongs to the user or is unclaimed.
+
 
 ### Rust HTTP and JSON
 
