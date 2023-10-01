@@ -18,8 +18,19 @@ rustup update
 # Download and build this crate and its dependencies defined in Cargo.toml
 cargo build
 
+```
+
+### Running Locally
+
+```sh
 # Rust goes brrrr
 RUST_LOG=trace cargo run
+
+# For active local development, install cargo-watch
+cargo install cargo-watch
+
+RUST_LOG=trace cargo watch -c -w src -x run
+
 ```
 
 **Testing Locally**
@@ -31,7 +42,11 @@ RUST_LOG=trace cargo run
 curl -X POST -H "Content-Type: application/json" -d @./webhook.json 127.0.0.1:8080/status
 ```
 
-### Zulip API
+### Deploying w/ Docker & fly.io
+
+**TODO**
+
+#### Zulip API
 
 Because this bot will not be written in Python, we sadly will not be able to use
 the oh-so-nice [Zulip Python bot
@@ -41,7 +56,7 @@ Zulip's [ Outgoing Webhooks
 when Status Bot has been mentioned. Parsing and processing this JSON will be
 simple enough in Rust.
 
-### Virtual RC API
+#### Virtual RC API
 
 [Virtual RC has an API](https://docs.rctogether.com/#introduction) for things like pet bots, maze bots, and all sorts of other things. We will be using it to update the status.
 
@@ -66,7 +81,7 @@ Virtual RC bots (which use the API) may update their desk's status by using
 only update a desk which belongs to the user or is unclaimed.
 
 
-### Rust HTTP and JSON
+#### Rust HTTP and JSON
 
 Here are some common and possible choices for crates to allow HTTP
 request/response and JSON communication with the Zulip API.
@@ -82,3 +97,41 @@ request/response and JSON communication with the Zulip API.
   serialization and deserialization of any Rust data type with helpful and easy
   to use macros and annotations. This will certainly be a crate used in this
   project.
+
+
+#### Registration Flow
+
+
+Status bot should work immediately for setting their Zulip status.
+
+
+The following is required for connecting a Zulip account to virtual RC:
+
+1. User direct messages @Status Bot and sends `desk {desk_id}`. This is the
+   user's `desk_id` in Virtual RC. Sending status bot `help` should give
+   instructions on how to find their `desk_id`.
+
+
+2. Status bot records `zulip_user_id -> virtual_rc_desk_id` (file or otherwise).
+
+3. All future direct messages to @Status Bot with `status "{user's status}"`
+   should set both Zulip status and Virtual RC status.
+
+
+
+#### Open Questions
+
+* Is it possible for the user to send status bot a time in which they would like
+  the status to expire?
+
+  * `status ":octopus: working until 10am" 10am`
+  * `status ":octopus: working until for 2 hours" 2hrs`
+  * `status ":beach: Out of office until 10/20" 2w`
+  * `status ":painting: "Presentation on thursday" thurs`
+  * `status ":laptop: Joining book club at <time:2023-09-28T09:30:00-06:00>`
+
+* If a time is set to expire, status bot will need to schedule a future API call
+  to unset both Zulip and Virtual RC statuses.
+
+  * What is the best way in rust to schedule an action to occur at a specific
+    date and time?

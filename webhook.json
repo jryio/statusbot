@@ -6,6 +6,7 @@
     "avatar_url": "https://secure.gravatar.com/avatar/1f4f1575bf002ae562fea8fc4b861b09?d=identicon&version=1",
     "client": "website",
     "content": "@**Outgoing webhook test** Zulip is the world\u2019s most productive group chat!",
+    "content_type": "text/x-markdown",
     "display_recipient": "Verona",
     "id": 112,
     "is_me_message": false,

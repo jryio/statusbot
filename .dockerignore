@@ -1,0 +1,4 @@
+# We do not want docker to track, copy, or use our local /target directory.
+# It will increase our image's context size if we do and slow down build and
+# startup times.
+/target

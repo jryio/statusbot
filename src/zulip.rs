@@ -64,6 +64,7 @@ pub enum MessageType {
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
+#[serde(untagged)]
 pub enum DisplayRecipient {
     Recipients(Vec<User>),
     Stream(String),
@@ -104,8 +105,9 @@ pub struct Message {
     pub is_me_message: bool,
     /// The UNIX timestamp for when the message was last edited, in UTC seconds.
     /// Not present if the message has never been edited
-    #[serde(deserialize_with = "time::serde::timestamp::deserialize")]
-    pub last_edit_timestamp: OffsetDateTime,
+    #[serde(default)]
+    #[serde(with = "time::serde::timestamp::option")]
+    pub last_edit_timestamp: Option<OffsetDateTime>,
     /// A unique ID for the set of users receiving the message (either a stream or group of users). Useful primarily for hashing.
     pub recipient_id: u64,
     /// The Zulip API email address of the message's sender.
