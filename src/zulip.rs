@@ -1,4 +1,6 @@
 /*
+* This is an example Zulip Incoming Webhook Payload
+*
 {
     "bot_email": "outgoing-bot@localhost",
     "bot_full_name": "Outgoing webhook test",

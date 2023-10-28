@@ -1,3 +1,6 @@
+// FIX: Remove this crate-level lint disable
+#![allow(dead_code)]
+
 mod bot;
 mod rc;
 mod secret;
@@ -8,9 +11,7 @@ extern crate pretty_env_logger;
 #[macro_use]
 extern crate log;
 
-use dotenv::dotenv;
 use hyper::{
-    client::HttpConnector,
     service::{make_service_fn, service_fn},
     Body, Client, Method, Request, Response, Server, StatusCode,
 };
@@ -23,6 +24,7 @@ type Result<T> = std::result::Result<T, GenericError>;
 type HttpsClient = Client<hyper_tls::HttpsConnector<hyper::client::HttpConnector>>;
 
 // FIX: Use a properly configured evironment variable for this
+// FIX: Use dotenf for this `use dotenv::dotenv`;
 static ADDRESS: &str = "127.0.0.1:8080";
 static NOTFOUND: &str = "NOT FOUND";
 const STATUS_ENDPOINT: &str = "/status";

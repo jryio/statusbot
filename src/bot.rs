@@ -1,6 +1,6 @@
 use crate::{secret::Secret, HttpsClient, Result};
 use emojic::emojis::Emoji;
-use hyper::{client::HttpConnector, Client, Method, Request};
+use hyper::{Method, Request};
 use serde::{Deserialize, Serialize};
 
 static HELP_TEXT: &str = r#"**How to use Status Bot**
