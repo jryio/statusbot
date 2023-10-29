@@ -31,16 +31,37 @@
 }
 */
 
+use crate::{secret::Secret, HttpsClient};
 use serde::Deserialize;
 use time::OffsetDateTime;
+use url::Url;
 
-/*
-* NOTIFICATIONS FROM ZULIP - VIA ZULIP'S OUTGOING WEBHOOKS
-*
-* https://recurse.zulipchat.com/api/outgoing-webhooks#outgoing-webhook-format
-*/
+const BASE_URL: &str = "zulipchat.com";
 
-#[derive(Deserialize, Debug)]
+pub struct ZulipClient {
+    /// The base url of the Zulip instance
+    ///
+    /// url = <subdomain>.zulipchat.com
+    pub url: Url,
+    client: HttpsClient,
+    bot_email: Secret,
+    api_key: Secret,
+}
+
+impl ZulipClient {
+    pub fn new() -> Self {
+        todo!()
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                  Data Types                                */
+/* -------------------------------------------------------------------------- */
+
+// NOTIFICATIONS FROM ZULIP - VIA ZULIP'S OUTGOING WEBHOOKS
+// https://recurse.zulipchat.com/api/outgoing-webhooks#outgoing-webhook-format
+
+#[derive(Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Trigger {
     /// In Zulip 8.0 this was renamed to 'direct_message' from 'private_message'
@@ -158,6 +179,7 @@ pub struct OutgoingWebhook {
 }
 
 /*
+* TODO:
 * BOT RESPONSES TO ZUIP - JSON RESONSES TO ZULIP'S OUTGOING WEBHOOKS
 *
 * Option One: Bot does not need to reply to the notified message

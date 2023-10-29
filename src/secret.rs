@@ -18,3 +18,15 @@ impl Debug for Secret {
         write!(f, "SECRET_CANNOT_BE_LOGGED")
     }
 }
+
+impl PartialEq<String> for Secret {
+    fn eq(&self, other: &String) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<Secret> for String {
+    fn eq(&self, other: &Secret) -> bool {
+        *self == *other.0
+    }
+}
