@@ -30,3 +30,15 @@ impl PartialEq<Secret> for String {
         *self == *other.0
     }
 }
+
+impl From<String> for Secret {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for Secret {
+    fn from(value: &str) -> Self {
+        Self(value.into())
+    }
+}

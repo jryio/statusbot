@@ -1,3 +1,5 @@
+use std::str::SplitWhitespace;
+
 use crate::{
     rc::RecurseClient,
     secret::Secret,
@@ -139,13 +141,8 @@ impl Bot {
     /// Creates a new Status Bot instance
     pub fn new(client: HttpsClient) -> Bot {
         // TODO: Instantiate a Zulip Client and store it (note: it will be without the user's API Key)
-        let rc = RecurseClient::new(
-            client.clone(),
-            "recurse".into(),
-            Secret("".into()),
-            Secret("".into()),
-            "150139".into(),
-        );
+
+        let rc = RecurseClient::new(client.clone());
         Bot {
             client,
             rc,
@@ -170,30 +167,29 @@ impl Bot {
         }
 
         if webhook.token != self.api_token {
-            info!("Invalid bot token. Recieved an incoming webhook for a different bot? bot_email={} bot_full_name={}", webhook.bot_email, webhook.bot_full_name)
+            info!(
+                "Invalid bot token.\
+                Recieved an incoming webhook for a different bot?\
+                bot_email={} bot_full_name={}",
+                webhook.bot_email, webhook.bot_full_name
+            )
         }
 
         let message = webhook.data;
         let user_id = webhook.message.sender_id;
-        let result = match Self::parse_cmd(&message) {
-            Command::Help => self.cmd_help(),
-            Command::Show => self.cmd_show(),
-            Command::Clear => self.cmd_clear(),
-            Command::Feedback(f) => self.cmd_feedback(&f),
-            Command::Status(status) => self.cmd_status(user_id, status),
-        };
+        let command = Self::parse_cmd(&message);
+        let result = self.run_command(command, user_id);
 
         // TODO: Handle the result of the match. If any cmd methods returned a result, something
         // went wrong and we should reply to the user with a message saying "Status Bot was unable
         // to perform <cmd> because of <reason>. If you believe status bot is not working, please
         // write a Zulip message to <maintianers>"
-
-        // FIX: Rmeove this
         result.unwrap()
     }
 
-    /// Given an input message, split_cmd will break the input
-    pub fn parse_cmd(message: &str) -> Command {
+    /// Parses the input message from the user into one of the known Status Bot commands.
+    /// If no command can be parsed, the help command is run showing help text
+    fn parse_cmd(message: &str) -> Command {
         // If the message is empty or entirely whitespace, the iterator will yield None
         // split_whitespace() will also handle \t \n and other unicode whitespaces
         let mut splits = message.split_whitespace();
@@ -203,16 +199,7 @@ impl Bot {
                 "show" => Command::Show,
                 "clear" => Command::Clear,
                 "feedback" => {
-                    let feedback: String = splits
-                        .fold(String::new(), |mut a, b| {
-                            a.reserve(b.len() + 1);
-                            a.push_str(b);
-                            a.push_str(" ");
-                            a
-                        })
-                        .trim_end()
-                        .into();
-
+                    let feedback = Self::parse_feedback(splits);
                     match feedback.len() {
                         0 => Command::Help,
                         _ => Command::Feedback(feedback),
@@ -228,6 +215,34 @@ impl Bot {
 
         // Empty mesage, entirely whitespace
         Command::Help
+    }
+
+    /// Parse feedback collects all of the remaining words back into a string
+    fn parse_feedback(splits: SplitWhitespace<'_>) -> String {
+        splits
+            .fold(String::new(), |mut a, b| {
+                a.reserve(b.len() + 1);
+                a.push_str(b);
+                a.push_str(" ");
+                a
+            })
+            .trim_end()
+            .into()
+    }
+
+    /// Parse status handles the different valid combinations to construct a  [`Status`]
+    fn parse_status(splits: SplitWhitespace<'_>) -> Status {
+        todo!()
+    }
+
+    fn run_command(&self, command: Command, user_id: u64) -> Result<Reply> {
+        match command {
+            Command::Help => self.cmd_help(),
+            Command::Show => self.cmd_show(),
+            Command::Clear => self.cmd_clear(),
+            Command::Feedback(f) => self.cmd_feedback(&f),
+            Command::Status(status) => self.cmd_status(user_id, status),
+        }
     }
 
     /// `status` - Sets the given status on both Virtual RC and Zulip

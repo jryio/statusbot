@@ -17,8 +17,6 @@ extern crate pretty_env_logger;
 #[macro_use]
 extern crate log;
 
-use std::sync::Arc;
-
 // -----------------
 // Imports
 // -----------------
@@ -28,6 +26,7 @@ use hyper::{
     Body, Client, Method, Request, Response, Server, StatusCode,
 };
 use hyper_tls::HttpsConnector;
+use std::{net::SocketAddr, sync::Arc};
 
 // -----------------
 // Types
@@ -39,9 +38,13 @@ type HttpsClient = Client<hyper_tls::HttpsConnector<hyper::client::HttpConnector
 // -----------------
 // Constants
 // -----------------
-// FIX: Use a properly configured evironment variable for this
-// FIX: Use dotenf for this `use dotenv::dotenv`;
-const ADDRESS: &str = "127.0.0.1:8080";
+const ENV_DEVEL: &str = ".env.devel";
+const ENV_PROD: &str = ".env.prod";
+const RUN_MODE: &str = "RUN_MODE";
+const PROD: &str = "PROD";
+const DEVEL: &str = "DEVEL";
+const SERVER_DOMAIN: &str = "SERVER_DOMAIN";
+const SERVER_PORT: &str = "SERVER_PORT";
 const NOTFOUND: &str = "NOT FOUND";
 const ROOT: &str = "/";
 const STATUS_ENDPOINT: &str = "/status";
@@ -104,34 +107,58 @@ async fn handle_post_status(req: Request<Body>, bot: Arc<Bot>) -> Result<Respons
     Ok(response)
 }
 
+/// Loads the correct .env file based on the the RUN_MODE envrionment variable
+///
+/// If RUN_MODE is set to PROD, the .env.prod is loaded
+///
+/// If RUN_MODE is set to DEVEL, then .env.devel is loaded
+///
+/// For everything else we default to loading .env.devel
+fn load_env() {
+    let env_file = match std::env::var(RUN_MODE) {
+        Ok(val) => match val.as_str() {
+            PROD => ENV_PROD,
+            DEVEL => ENV_DEVEL,
+            _ => ENV_DEVEL,
+        },
+        Err(_) => ENV_DEVEL,
+    };
+    match dotenv::from_filename(env_file) {
+        Ok(_path) => info!("Loaded {env_file} file successfully"),
+        Err(e) => error!("Failed to load {env_file} file with error = {e:?}"),
+    };
+}
+
+fn make_address() -> SocketAddr {
+    let server_domain =
+        std::env::var(SERVER_DOMAIN).expect("The .env file is missing SERVER_DOMAIN");
+    let server_port = std::env::var(SERVER_PORT).expect("The .env file is missing SERVER_PORT");
+    format!("{server_domain}:{server_port}")
+        .parse()
+        .expect("SERVER_DOMAIN:SERVER_PORT is an invalid SocketAddr")
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     pretty_env_logger::init();
 
-    // Read ENV variables
-    // match dotenv() {
-    //     Ok(_path) => info!("Loaded .env file successfully"),
-    //     Err(e) => error!("Failed to load .evn file with error = {e:?}"),
-    // }
+    load_env();
+    let address = make_address();
 
-    // Configure server
-    let address = ADDRESS.parse().unwrap();
     let https = HttpsConnector::new();
     let client = Client::builder().build::<_, hyper::Body>(https);
-
     let bot = Arc::new(Bot::new(client.clone()));
 
     // Define HTTP service
     let http_service = make_service_fn(move |_| {
         // Hyper creates a new closure will be created for every incoming connection.
         // Additionally, once a connection is established, there may be multiple HTTP requests.
-        let client = client.clone();
         let bot = bot.clone();
 
-        #[allow(clippy::let_and_return)]
         // This is the `Service` that will handle the connection.
         // `service_fn` is a helper to convert a function that
         // returns a Response into a `Service`.
+        #[allow(clippy::let_and_return)]
         let service = async {
             Ok::<_, GenericError>(service_fn(move |req| {
                 // Handle requests here
@@ -142,12 +169,12 @@ async fn main() -> Result<()> {
         service
     });
 
-    info!("Started server on address: {ADDRESS}");
+    info!("Started server on address: {address}");
     let server = Server::bind(&address).serve(http_service);
 
     match server.await {
         Ok(_) => info!("Server exited successfully"),
-        Err(e) => error!("Server error: {e:?}"),
+        Err(e) => error!("Server exited with error: {e:?}"),
     };
 
     Ok(())

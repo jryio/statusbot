@@ -1,12 +1,17 @@
 use hyper::{body::HttpBody, http::request::Builder, Body, Method, Request, Response};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
+use std::env;
 use time::OffsetDateTime;
 use url::Url;
 
 use crate::{secret::Secret, HttpsClient, Result};
 
 // An example response length multiplied by 8 produces a maximum length of 2.2Mb response
+const RC_SITE: &str = "RC_SITE";
+const RC_BOT_ID: &str = "RC_BOT_ID";
+const RC_APP_ID: &str = "RC_APP_ID";
+const RC_APP_SECRET: &str = "RC_APP_SECRET";
 const MAX_RESPONSE_BYES: u64 = 284701 * 8;
 const AUTHORIZATION: &str = "Authorization";
 const BASE_URL: &str = "rctogether.com";
@@ -42,18 +47,19 @@ impl RecurseClient {
     /// It uses the given APP_ID and SECRET as HTTP Basic Auth Username:Password
     ///
     /// It controls the bot with the given BOT_ID
-    pub fn new(
-        client: HttpsClient,
-        subdomain: String,
-        app_id: Secret,
-        secret: Secret,
-        bot_id: String,
-    ) -> Self {
-        let url = format!("https://{subdomain}.{BASE_URL}");
-        let url = Url::parse(&url).unwrap();
+    pub fn new(client: HttpsClient) -> Self {
+        let app_id: Secret = env::var(RC_APP_ID)
+            .expect("The .env file is missing RC_APP_ID")
+            .into();
+        let secret: Secret = env::var(RC_APP_SECRET)
+            .expect("The .env file is missing RC_APP_SECRET")
+            .into();
+        let bot_id = env::var(RC_BOT_ID).expect("The .env file is missing RC_BOT_ID");
+        let site = env::var(RC_SITE).expect("The .env file is missing RC_SITE");
+        let url = Url::parse(&site).expect("The env variable RC_SITE is not a valid URL");
         Self {
-            client,
             url,
+            client,
             bot_id,
             app_id,
             secret,
