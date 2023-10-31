@@ -7,10 +7,14 @@ use crate::{
     HttpsClient, Result,
 };
 use emojic::emojis::Emoji;
-use hyper::{Method, Request};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use time::{format_description::well_known::Iso8601, OffsetDateTime};
 
-const SPACE: char = ' ';
+const SPACE: &str = " ";
+const RE_EMOJI: &str = "(?<emoji>:.+?:)?";
+const RE_TEXT: &str = "(?<text>[^<>\r\n\t]+)?";
+const RE_TIME: &str = "(<time:(?<iso8061>.+?)>)?";
 const HELP_TEXT: &str = r#"**How to use Status Bot**:
 * `status {emoji}? {status} {expiration}?` Set your status
     * `{emoji}` optional. Emoji must be the unicode character for the emoji, not its short name like :apple:
@@ -44,20 +48,20 @@ Have you found a bug with Status Bot? Please [create an issue on Github](https:/
 ///
 /// * Setting a status with an expiration time:
 ///     * `status :bento box: Let's get lunch soon. All aboard the lunch train! <time:2023-09-29T12:00:00-06:00>`
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Status {
     /// An emoji for the status.
     /// Default: 💻
     /// The default is only used if you specify status but not emoji.
     ///
     /// Source: https://docs.rctogether.com/#update-a-desk
-    pub emoji: Option<Emoji>,
+    pub emoji: Option<&'static Emoji>,
 
     /// The text status.
     /// The desk must have an owner in order to have a status.
     ///
     /// Source: https://docs.rctogether.com/#update-a-desk
-    pub text: String,
+    pub text: Option<String>,
 
     /// When the status (text and emoji) should expire.
     /// Specified as an ISO8601 timestamp.
@@ -186,6 +190,15 @@ impl Bot {
         // write a Zulip message to <maintianers>"
         result.unwrap()
     }
+    fn run_command(&self, command: Command, user_id: u64) -> Result<Reply> {
+        match command {
+            Command::Help => self.cmd_help(),
+            Command::Show => self.cmd_show(),
+            Command::Clear => self.cmd_clear(),
+            Command::Feedback(f) => self.cmd_feedback(&f),
+            Command::Status(status) => self.cmd_status(user_id, status),
+        }
+    }
 
     /// Parses the input message from the user into one of the known Status Bot commands.
     /// If no command can be parsed, the help command is run showing help text
@@ -193,8 +206,8 @@ impl Bot {
         // If the message is empty or entirely whitespace, the iterator will yield None
         // split_whitespace() will also handle \t \n and other unicode whitespaces
         let mut splits = message.split_whitespace();
-        if let Some(val) = splits.next() {
-            return match val {
+        if let Some(first) = splits.next() {
+            return match first {
                 "help" => Command::Help,
                 "show" => Command::Show,
                 "clear" => Command::Clear,
@@ -206,7 +219,18 @@ impl Bot {
                     }
                 }
                 "status" => {
-                    todo!()
+                    let mut peakable = splits.by_ref().peekable();
+                    // peek() returns a &T so if T = &str we get &&str
+                    let first = peakable.peek();
+                    match first {
+                        Some(_) => {
+                            let rest = Self::fold_splits(splits);
+                            let status = Self::parse_status(rest);
+                            todo!()
+                        }
+                        // We only got `status` with no arguments
+                        None => Command::Help,
+                    }
                 }
                 // Any other words
                 _ => Command::Help,
@@ -219,6 +243,91 @@ impl Bot {
 
     /// Parse feedback collects all of the remaining words back into a string
     fn parse_feedback(splits: SplitWhitespace<'_>) -> String {
+        Self::fold_splits(splits)
+    }
+
+    /// Parse status handles the different valid combinations to construct a  [`Status`]
+    ///
+    /// CASE : status :emoji:
+    /// CASE : status :emoji: hi
+    /// CASE : status :emoji: hi <time:XXXX>
+    /// CASE : status :emoji: <time:YYYY>
+    fn parse_status(input: String) -> Option<Status> {
+        let mut status = Status::default();
+        let re_status = format!("{}{}{}", RE_EMOJI, RE_TEXT, RE_TIME);
+        let re_status = Regex::new(&re_status).unwrap();
+
+        return match re_status.captures(&input) {
+            Some(caps) => {
+                if let Some(emoji) = caps.name("emoji") {
+                    status.emoji = emojic::parse_alias(emoji.as_str());
+                }
+
+                if let Some(text) = caps.name("text") {
+                    status.text = Some(text.as_str().into())
+                }
+
+                if let Some(time) = caps.name("time") {}
+
+                return Some(status);
+            }
+            None => None,
+        };
+
+        // 1- Is the next word an emoji? (Starts with :, followed by some words in snake_case, then
+        // ends with :)
+        //      * If it is, use emojic to convert it into a unicode character, set statsus.emoji
+        //      equal to it
+        //      * If it is an emoji alias but not a standard name, then return an error [`Reply`] to the user
+        // 2 - Look at the last item in the SplitWhitespace, is it a <time:*> string?
+        //      * If it is, use a some parsing logic to get the time out in UTC?
+        //      * If it is, but an invalid time, return an error reply to the user
+        // 3 - Collect the remaining characters as the status text
+        let mut status = Status::default();
+        let mut peekable = splits.by_ref().peekable();
+        let first = *peekable.peek().unwrap(); /* We know we have at least this value because of parse_cmd::status */
+
+        // The first item is an emoji
+        if let Some(emoji) = emojic::parse_alias(first) {
+            // Set the emoji status and progress the iterator
+            status.emoji = Some(*emoji);
+            peekable.next();
+        }
+
+        // Pop the last item and check if it is a <time:---> formatted string
+        if let Some(last) = peekable.next_back() {
+            // If it's not a time, we should try to add it back to the iterator
+            let re_time = Regex::new(r"<time:(?<iso8061>.+)>").unwrap();
+            if let Some(caps) = re_time.captures(last) {
+                let maybe_iso8061 = caps.name("iso8061").map_or("", |m| m.as_str());
+                // Attempt to parse it into a valid OffsetDateTime
+                if let Ok(date_time) = OffsetDateTime::parse(maybe_iso8061, &Iso8601::DEFAULT) {
+                    status.expires_at = Some(date_time);
+                }
+            }
+            // Build the status now that we have emoji and/or time
+            // Set aside a string for the status.text
+            let mut text = String::default();
+            let mut words = peekable.collect::<Vec<&str>>();
+            // No expire_at time was set on the Status
+            // so we should add the last item back on to the iterator
+            if status.expires_at.is_none() {
+                words.push(last);
+            }
+            text = words.join(SPACE);
+            if text.len() > 0 {
+                status.text = Some(text);
+            }
+        }
+        // If we hit this then we only got `status :emoji:` and nothing as the last
+        // Having a status with no text is valid
+        else {
+        }
+
+        status
+    }
+
+    fn fold_splits(splits: SplitWhitespace) -> String {
         splits
             .fold(String::new(), |mut a, b| {
                 a.reserve(b.len() + 1);
@@ -228,21 +337,6 @@ impl Bot {
             })
             .trim_end()
             .into()
-    }
-
-    /// Parse status handles the different valid combinations to construct a  [`Status`]
-    fn parse_status(splits: SplitWhitespace<'_>) -> Status {
-        todo!()
-    }
-
-    fn run_command(&self, command: Command, user_id: u64) -> Result<Reply> {
-        match command {
-            Command::Help => self.cmd_help(),
-            Command::Show => self.cmd_show(),
-            Command::Clear => self.cmd_clear(),
-            Command::Feedback(f) => self.cmd_feedback(&f),
-            Command::Status(status) => self.cmd_status(user_id, status),
-        }
     }
 
     /// `status` - Sets the given status on both Virtual RC and Zulip
@@ -347,4 +441,7 @@ mod tests {
 
         // TODO: Test Command::Status(Status)
     }
+
+    #[test]
+    fn test_parse_status() {}
 }
