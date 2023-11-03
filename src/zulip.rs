@@ -31,6 +31,8 @@
 }
 */
 
+use std::collections::HashMap;
+
 use crate::{secret::Secret, HttpsClient};
 use serde::Deserialize;
 use time::OffsetDateTime;
@@ -199,3 +201,15 @@ pub struct OutgoingWebhook {
 *
 * https://zulip.com/help/format-your-message-using-markdown
 */
+
+/* -------------------------------------------------------------------------- */
+/*                                  Emoji JSON                                */
+/* -------------------------------------------------------------------------- */
+
+///
+#[derive(Deserialize, Debug)]
+#[serde(transparent)]
+/// [`name`] is Zulip's alias for the unicode character
+///
+/// The value is the unicode character itself
+pub struct ZulipEmoji(pub HashMap<String, String>);

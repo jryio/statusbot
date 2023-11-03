@@ -20,7 +20,10 @@ extern crate log;
 // -----------------
 // Imports
 // -----------------
-use crate::{bot::Bot, zulip::OutgoingWebhook};
+use crate::{
+    bot::Bot,
+    zulip::{OutgoingWebhook, ZulipEmoji},
+};
 use hyper::{
     service::{make_service_fn, service_fn},
     Body, Client, Method, Request, Response, Server, StatusCode,
@@ -89,13 +92,14 @@ async fn handle_post_status(req: Request<Body>, bot: Arc<Bot>) -> Result<Respons
     let webhook: OutgoingWebhook = serde_json::from_str(&body_string)?;
 
     // TODO: Only log if we fail to deserailize outgoing webhook from Zulip
-    // debug!("Deserialized outgoing-webhook: {webhook:#?}");
+    debug!("Deserialized incoming-outgoing-webhook: {webhook:#?}");
 
     // let bot_reply = bot.cmd_help(); // returns nothing
     // The incoming zulip message
     info!("message from user = {}", &webhook.data);
 
     let reply = bot.respond(webhook).await;
+    debug!("Main -> bot.respond(webhook) -> Reply = {:?}", reply);
 
     // --> Response to Zulip
     let response = Response::builder().status(StatusCode::OK);
@@ -141,15 +145,23 @@ fn make_address() -> SocketAddr {
 #[tokio::main]
 async fn main() -> Result<()> {
     pretty_env_logger::init();
-
     load_env();
+
     let address = make_address();
-
     let https = HttpsConnector::new();
-    let client = Client::builder().build::<_, hyper::Body>(https);
-    let bot = Arc::new(Bot::new(client.clone()));
 
-    // Define HTTP service
+    // Shared State
+    let file = include_str!("zulip.json");
+    let emoji: ZulipEmoji = serde_json::from_str(file).unwrap();
+    let client = Client::builder().build::<_, hyper::Body>(https);
+    let mut bot = Bot::new(client.clone(), emoji);
+
+    // TODO: Move this to a tokio::spawn background task that never gets canceled
+    // https://stackoverflow.com/questions/66863385/how-can-i-use-tokio-to-trigger-a-function-every-period-or-interval-in-seconds
+    let _res = bot.cache_desk_owners().await;
+    let bot = Arc::new(bot);
+
+    // Define HTTP Service
     let http_service = make_service_fn(move |_| {
         // Hyper creates a new closure will be created for every incoming connection.
         // Additionally, once a connection is established, there may be multiple HTTP requests.

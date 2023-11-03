@@ -10,7 +10,7 @@ impl Secret {
 
 impl Display for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SECRET_CANNOT_BE_LOGGED")
+        write!(f, "{}", self.0)
     }
 }
 impl Debug for Secret {

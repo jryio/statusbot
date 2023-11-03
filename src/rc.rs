@@ -1,3 +1,4 @@
+use data_encoding::{BASE64, BASE64URL};
 use hyper::{body::HttpBody, http::request::Builder, Body, Method, Request, Response};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
@@ -5,7 +6,7 @@ use std::env;
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::{secret::Secret, HttpsClient, Result};
+use crate::{bot::Status, secret::Secret, HttpsClient, Result};
 
 // An example response length multiplied by 8 produces a maximum length of 2.2Mb response
 const RC_SITE: &str = "RC_SITE";
@@ -18,6 +19,7 @@ const BASE_URL: &str = "rctogether.com";
 const API_DESKS: &str = "/api/desks";
 const API_BOTS: &str = "/api/bots";
 
+#[derive(Debug)]
 /// Recurse Client makes API requets to Virtual RC
 pub struct RecurseClient {
     /// The base url of the Virtual RC instance.
@@ -59,8 +61,8 @@ impl RecurseClient {
         let url = Url::parse(&site).expect("The env variable RC_SITE is not a valid URL");
         Self {
             url,
-            client,
             bot_id,
+            client,
             app_id,
             secret,
         }
@@ -69,16 +71,19 @@ impl RecurseClient {
     /// Constructs an http::request::Builder with method, uri, and HTTP Basic Auth.
     /// The caller must provide .body() and thus consume the RequestBuilder
     fn create_request(&self, method: Method, endpoint: &str) -> Builder {
+        let credentials = format!(
+            "{username}:{password}",
+            username = self.app_id.to_string(),
+            password = self.secret.to_string(),
+        );
+        let basic = format!("Basic {}", BASE64URL.encode(credentials.as_bytes()));
         Request::builder()
             .method(method)
             .uri(self.url.join(endpoint).unwrap().to_string())
             .header(
+                // https://datatracker.ietf.org/doc/html/rfc7617
                 AUTHORIZATION,
-                format!(
-                    "Basic {username}:{password}",
-                    username = self.app_id,
-                    password = self.secret,
-                ),
+                basic,
             )
     }
 
@@ -103,20 +108,37 @@ impl RecurseClient {
         return Ok(data);
     }
 
-    /// GET <subdomain>.rctogether.com/api/desks
+    /* -------------------------------------------------------------------------- */
+    /*                                   API CALLS                                */
+    /* -------------------------------------------------------------------------- */
+
+    /// GET /api/desks
     ///
     /// Fetch all desks in Virtual RC
     pub async fn get_desks(&self) -> Result<GetDesksResponse> {
         let req = self
             .create_request(Method::GET, API_DESKS)
             .body(Body::empty())?;
-        let res = self.client.request(req).await?; /* Request might have failed */
-        debug!("Recurse Client -> get_desks -> response = {res:?}");
+        let res = self.client.request(req).await?;
         let desks: GetDesksResponse = Self::read_json_body(res).await?;
         Ok(desks)
     }
 
-    /// PATCH <subdomain>.rctogether.com/api/bots/:id
+    /// PATCH /api/desks/:id
+    ///
+    /// Update the fields of a desk. Can be used to clear a desk's status by passing an empty [`Status`]
+    pub async fn update_desk(&self, desk_id: u32, status: Status) -> Result<UpdateDeskResponse> {
+        let endpoint = format!("{}/{}", API_DESKS, desk_id);
+        let status_json = serde_json::to_string(&status)?;
+        let req = self
+            .create_request(Method::PUT, &endpoint)
+            .body(Body::from(status_json))?;
+        let res = self.client.request(req).await?;
+        let updated_desk: UpdateDeskResponse = Self::read_json_body(res).await?;
+        Ok(updated_desk)
+    }
+
+    /// PATCH /api/bots/:id
     ///
     /// This can upate the bot's properies, location, etc.
     pub async fn update_bot(&self, update_bot: UpdateBotRequest) -> Result<UpdateBotResponse> {
@@ -132,7 +154,7 @@ impl RecurseClient {
         // TODO: Need to handle what happens with the coordinates given are occupied.
         // The response in this case is
         // HTTP 422 - "{ "pos": [ "must not be in a block" ] }"
-        // Should perform a directional search around the position until we find an open slot
+        // Should perform a directional search around the position until we find an open slotrc
         let updated_bot: UpdateBotResponse = Self::read_json_body(res).await?;
         Ok(updated_bot)
     }
@@ -141,13 +163,13 @@ impl RecurseClient {
 /* -------------------------------------------------------------------------- */
 /*                                  Data Types                                */
 /* -------------------------------------------------------------------------- */
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct App {
     name: String,
     id: usize,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum EntityType {
     /// A person using RC Together
     Avatar,
@@ -174,9 +196,9 @@ pub enum EntityType {
     RcCalendar,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 /// A string representing where a bot can be facing
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "lowercase")]
 pub enum Direction {
     Up,
     Down,
@@ -184,24 +206,23 @@ pub enum Direction {
     Right,
 }
 
-#[derive(Serialize, Deserialize)]
 /// The Position of an entity in Virtual RC
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Position {
-    x: usize,
-    y: usize,
+    pub x: usize,
+    pub y: usize,
 }
-
-#[derive(Serialize, Deserialize)]
 /// An Avatar is the circular representation of a person using Virtual RC
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Avatar {
-    id: usize,
-    name: String,
-    image_url: String,
+    pub id: usize,
+    pub name: String,
+    pub image_url: String,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 /// Desk
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
 pub struct Desk {
     /// The Desk ID
     pub id: usize,
@@ -215,28 +236,27 @@ pub struct Desk {
     pub emoji: Option<String>,
     /// The text status of the text
     pub status: Option<String>,
-    /// When the status (text and emoji) should expire,
-    /// specified as an ISO8601 timestamp.
+    /// When the status (text and emoji) should expire.
+    /// Specified as an ISO8601 formatted string.
     /// Required if you specify status.
     /// Cannot be more than 24 hours in the future.
-    // TODO: Is it true that you cannot set the time more than 24 hours in the future?
     #[serde(default)]
-    #[serde(with = "time::serde::timestamp::option")]
+    #[serde(with = "time::serde::iso8601::option")]
     pub expires_at: Option<OffsetDateTime>,
     /// The Recurse Directory profile URL for the associated owner of this desk
     pub profile_url: Option<String>,
     /// Information on the onwer of this desk, including their ID, name, and image URL
-    pub ownder: Option<Avatar>,
+    pub owner: Option<Avatar>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub struct Bot {
-    display_name: String,
-    emoji: String,
-    direction: String,
-    can_be_mentioned: bool,
-    app: App,
+    pub display_name: String,
+    pub emoji: String,
+    pub direction: String,
+    pub can_be_mentioned: bool,
+    pub app: App,
     /* messge: Option<Message> is the last message sent by this bot. Since this bot does not send
      * messages, this field shoudl always be null */
 }
@@ -245,38 +265,46 @@ pub struct Bot {
 /*                                  Requests                                  */
 /* -------------------------------------------------------------------------- */
 
-#[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
 /// A request body for PATCH /api/bots/:id
 ///
 /// When making the request, all fields will be children of the "bot" field in the JSON
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "snake_case")]
 pub struct UpdateBotRequest {
-    name: Option<String>,
-    emoji: Option<String>,
-    x: Option<usize>,
-    y: Option<usize>,
-    direction: Option<Direction>,
-    can_be_mentioned: Option<bool>,
+    pub name: Option<String>,
+    pub emoji: Option<String>,
+    pub x: Option<usize>,
+    pub y: Option<usize>,
+    pub direction: Option<Direction>,
+    pub can_be_mentioned: Option<bool>,
 }
 
 /* -------------------------------------------------------------------------- */
 /*                                 Responses                                  */
 /* -------------------------------------------------------------------------- */
 
-#[derive(Serialize, Deserialize)]
-#[serde(transparent)]
 /// A response from GET /api/desks
 ///
 /// The response is a top-level JSON array with no fields,
 /// so we use serde's #transparent container attribute to skip over
 /// the single field in this struct an successfully deserialize it as
 /// a top-level JSON array.
-pub struct GetDesksResponse(Vec<Desk>);
-
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(transparent)]
+pub struct GetDesksResponse(pub Vec<Desk>);
+
 /// A response from PATCH /api/bots/:id
 ///
 /// The response is equivalent to the Bot entity type,
 /// so we wrap it and use #serde(transparent)
-pub struct UpdateBotResponse(Bot);
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(transparent)]
+pub struct UpdateBotResponse(pub Bot);
+
+/// A response from PATCH /api/desks/:id
+///
+/// If the desk is updated successfully then the reponse is the
+/// complete desk object with the updated fields applied.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(transparent)]
+pub struct UpdateDeskResponse(pub Desk);
