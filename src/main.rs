@@ -24,12 +24,18 @@ use crate::{
     bot::Bot,
     zulip::{OutgoingWebhook, ZulipEmoji},
 };
+use ::time::Duration;
 use hyper::{
     service::{make_service_fn, service_fn},
     Body, Client, Method, Request, Response, Server, StatusCode,
 };
 use hyper_tls::HttpsConnector;
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{Arc, RwLock},
+};
+use tokio::task;
 
 // -----------------
 // Types
@@ -48,6 +54,7 @@ const PROD: &str = "PROD";
 const DEVEL: &str = "DEVEL";
 const SERVER_DOMAIN: &str = "SERVER_DOMAIN";
 const SERVER_PORT: &str = "SERVER_PORT";
+const DESKS_INTERVAL: u64 = 1 * 60; /* 1 minutes */
 const NOTFOUND: &str = "NOT FOUND";
 const ROOT: &str = "/";
 const STATUS_ENDPOINT: &str = "/status";
@@ -154,12 +161,29 @@ async fn main() -> Result<()> {
     let file = include_str!("zulip.json");
     let emoji: ZulipEmoji = serde_json::from_str(file).unwrap();
     let client = Client::builder().build::<_, hyper::Body>(https);
-    let mut bot = Bot::new(client.clone(), emoji);
+
+    let bot = Bot::new(client.clone(), emoji);
 
     // TODO: Move this to a tokio::spawn background task that never gets canceled
     // https://stackoverflow.com/questions/66863385/how-can-i-use-tokio-to-trigger-a-function-every-period-or-interval-in-seconds
+
     let _res = bot.cache_desk_owners().await;
+    // this heap allocates. now Arc<bot> is a pointer
     let bot = Arc::new(bot);
+    let bot_for_background_task = bot.clone();
+
+    let back = task::spawn(async move {
+        let bot = bot_for_background_task.clone();
+        let mut interval = tokio::time::interval(
+            std::time::Duration::new(DESKS_INTERVAL, 0), /* 5 minutes */
+        );
+
+        loop {
+            interval.tick().await;
+            // go here after 5 minutes
+            let _ = bot.cache_desk_owners().await;
+        }
+    });
 
     // Define HTTP Service
     let http_service = make_service_fn(move |_| {

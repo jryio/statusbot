@@ -1,4 +1,4 @@
-use data_encoding::{BASE64, BASE64URL};
+use data_encoding::BASE64URL;
 use hyper::{body::HttpBody, http::request::Builder, Body, Method, Request, Response};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;

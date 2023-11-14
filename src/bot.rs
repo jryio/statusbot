@@ -1,4 +1,5 @@
 use std::str::SplitWhitespace;
+use std::sync::{Arc, RwLock};
 use std::{collections::HashMap, env};
 
 use crate::{
@@ -22,7 +23,7 @@ const COMMA: &str = ",";
 // This regex will match (pronouns)?(batch)? but not the name section
 const RE_RC_PRONOUNS: &str = r"(?<pronouns>\([a-z/]+\))?";
 const RE_RC_BATCH: &str = r"(\((W|SP|Sp|S|F|m)\d?'\d{2}\))?";
-const RE_RC_NON_NAME_PARTS: &str = r".*?";
+const RE_RC_NAME_PARTS: &str = r".*?";
 
 // Combined = (:(.+?):)?([^<>\r\n\t]+)?(<time:(.+?)>)?
 const RE_EMOJI: &str = "(:(?<emoji>.+?):)?";
@@ -31,9 +32,9 @@ const RE_TIME: &str = "(<time:(?<iso8061>.+?)>)?";
 
 const MISSING_DESK: &str = r#"**Unable to a find a desk in Vritual RC asssociated with your username**
 * Make sure you have [claimed a desk](https://recurse.notion.site/RC-Together-User-Guide-695cc163c76c47449347bd97a6842c3b) in Virutal RC
-* Make sure your Zulip username matches your Virtual RC username (ignore the (pronouns) and (batch) sections in your Zulip username)
-  * Fix a Zulip <-> Virtual RC name mismatch by using command `set_name {name}` with Status Bot
-  * `set_name {name}`
+* If your Zulip username does not match your Virtual RC username... (ignoring the (pronouns) and (batch) parentheticals)
+  * Fix username mismatch between Zulip <-> Virtual RC by using command `set_name {name}` with Status Bot
+  * `set_name {name}` Tell Status Bot your Virtual RC username
 * If Status Bot still cannot find your desk in Virtual RC, please [create an issue](https://github.com/jryio/statusbot/issues/new) on Github
 "#;
 const HELP_TEXT: &str = r#"**How to use Status Bot**:
@@ -45,7 +46,7 @@ const HELP_TEXT: &str = r#"**How to use Status Bot**:
   * `{expires_at}` optional - The expiration time for the status
     * Expiration should be set using zulip's [<time> selector](https://zulip.com/help/global-times)
     * Choose a time in the future!
-  * E.g: `status :crab: Rewriting Status Bot in Rust <time:2025-01-01T10:00:00-04:00>`
+  * `status :crab: Rewriting Status Bot in Rust <time:2025-01-01T10:00:00-04:00>`
 * `show` Display your current status
 * `clear` Clear your status
 * `feedback {text}` Provide anonymous feedback to the Status Bot maintainer(s)
@@ -67,7 +68,7 @@ pub struct Bot {
     /// Virtual RC [Owner.Name] -> Desk_ID
     ///
     /// Zuliup usernames are used to looup in this table. Maybe not be a perfect match
-    pub desk_owners: HashMap<String, usize>,
+    pub desk_owners: Arc<RwLock<HashMap<String, usize>>>,
     /// Manually set the Virtual RC name associated with this Zulip username
     pub corrected_names: HashMap<String, String>,
     /// An instance of a Virtual RC HTTP Client
@@ -90,7 +91,7 @@ impl Bot {
     /// Creates a new Status Bot instance
     pub fn new(client: HttpsClient, emojis: ZulipEmoji) -> Bot {
         let rc = RecurseClient::new(client.clone());
-        let desk_owners = HashMap::new();
+        let desk_owners = Arc::new(RwLock::new(HashMap::new()));
         let corrected_names = HashMap::new();
         let email = env::var(ZULIP_BOT_EMAIL).expect("ZULIP_BOT_EMAIL is not set in the .env file");
         let api_key =
@@ -116,14 +117,21 @@ impl Bot {
     ///
     /// This must be called before any other API request becuase we need a local cache of all
     /// vrc_user_id -> desk_id to match based on the Zulip sender in our incoming [`OutgoingWebhook`]
-    pub async fn cache_desk_owners(&mut self) -> Result<()> {
+    pub async fn cache_desk_owners(&self) -> Result<()> {
         // Fetch all desks
         // Parse the response
         //  take the desk.owner.name field as the key
         //  take the desk.id as the value
         // Done
+
+        //  API (recurse.rctogether.com/api/desks)
         let desks = self.rc.get_desks().await?;
-        self.desk_owners = desks
+
+        info!("bot -> cache_desk_owners -> GET desks");
+
+        // self.desk_owners =
+
+        let x = desks
             .0
             .iter()
             .filter(|desk| desk.owner.is_some())
@@ -137,6 +145,11 @@ impl Bot {
                 let _ = map.insert(name.clone(), desk_id);
                 map
             });
+
+        if let Ok(mut d_o) = self.desk_owners.write() {
+            *d_o = x;
+            info!("bot -> cache_desk_owners -> successfully got the write lock for desk_owners and updated");
+        }
 
         Ok(())
     }
@@ -166,15 +179,17 @@ impl Bot {
         let message = webhook.data;
         let zuid = webhook.message.sender_id;
         let username = webhook.message.sender_full_name;
+        // TODO: Make parse_cmd return an error, interpret the error string a the message body of a [`Reply`]
+        let command = self.parse_cmd(&message);
+
         let rc_username = self.lookup_desk_id(&username);
         if rc_username == None {
-            debug!("bot -> respond -> lookup_desk_id returned None. Unable to find a desk for this zulip_username = {username}. Replied with MISSING_DESK text");
+            debug!("bot -> respond -> lookup_desk_id -> Unable to find a desk for this zulip_username = {username}. Replied with MISSING_DESK text");
             return Reply::Content {
                 content: MISSING_DESK.into(),
             };
         }
-        // TODO: Make parse_cmd return an error, interpret the error string a the message body of a [`Reply`]
-        let command = self.parse_cmd(&message);
+
         let result = self.run_command(command, zuid).await;
 
         // TODO: Handle the result of the match. If any cmd methods returned a result, something
@@ -195,37 +210,38 @@ impl Bot {
             Command::Status(status) => self.cmd_status(zuid, status).await,
             // Testing Commands (hidden)
             Command::TestMissingDesk => self._cmd_test_missing_desk().await,
+            Command::TestLookupDesk(name) => self._cmd_test_lookup_desk(name).await,
         }
     }
 
     /// `status` - Sets the given status on both Virtual RC and Zulip
-    pub async fn cmd_status(&self, zuid: u64, status: Status) -> Result<Reply> {
+    async fn cmd_status(&self, _zuid: u64, _status: Status) -> Result<Reply> {
         todo!();
     }
 
     /// `show` - Displays the user's current status on Virtual RC
-    pub async fn cmd_show(&self, zuid: u64) -> Result<Reply> {
+    async fn cmd_show(&self, _zuid: u64) -> Result<Reply> {
         //
         todo!()
     }
 
     /// `clear` - Unsets the currents status on Virtual RC and Zulip
-    pub async fn cmd_clear(&self, zuid: u64) -> Result<Reply> {
-        let empty = Status::default();
+    async fn cmd_clear(&self, _zuid: u64) -> Result<Reply> {
+        let _empty = Status::default();
         // self.rc.update_desk(empty).await;
         todo!()
     }
 
     /// `help` - Responds to the user with a help message detailing the different comands and configurations
     /// they can run using StatusBot
-    pub async fn cmd_help(&self) -> Result<Reply> {
+    async fn cmd_help(&self) -> Result<Reply> {
         Ok(Reply::Content {
             content: HELP_TEXT.into(),
         })
     }
 
     /// `feedback` - Writes feedback to the bot authors
-    pub async fn cmd_feedback(&self, feedback: &str) -> Result<Reply> {
+    async fn cmd_feedback(&self, _feedback: &str) -> Result<Reply> {
         // TODO: Send a Zulip message with the feedback to the list of maintainers configured in .env
         todo!()
     }
@@ -233,40 +249,79 @@ impl Bot {
     /// `set_name` - Updates the Zulip user's display name. Used resolving naming issues between
     /// Zulip and Virtual RC.
     /// TODO: Store this result somewhere other than memory. What options does fly.io give us?
-    pub async fn cmd_set_name(&self, zuid: u64, new_name: String) -> Result<Reply> {
+    async fn cmd_set_name(&self, _zuid: u64, _new_name: String) -> Result<Reply> {
         todo!()
     }
 
     /// Testing Function to return MISSING_DESK help text
-    pub async fn _cmd_test_missing_desk(&self) -> Result<Reply> {
-        debug!("Command TestMissingDesk -> MISSING_DESK = {}", MISSING_DESK);
+    async fn _cmd_test_missing_desk(&self) -> Result<Reply> {
+        debug!(
+            "Command::TestMissingDesk -> MISSING_DESK = {}",
+            MISSING_DESK
+        );
         Ok(Reply::Content {
             content: MISSING_DESK.into(),
         })
     }
 
-    /// Looks up the associated desk for the zulip username. If this user provided a username
-    /// correction then the corrected name will be used to lookup the desk_id instead.
+    async fn _cmd_test_lookup_desk(&self, zulip_username: String) -> Result<Reply> {
+        debug!("Command::TestLookupDesk -> zulip_username = {zulip_username}");
+        let parsed = self.parse_zulip_username(&zulip_username);
+        let maybe_virtual_rc_username = self.lookup_corrected_name(&parsed);
+
+        if let Ok(desk_owners) = self.desk_owners.read() {
+            let desk_id = desk_owners.get(maybe_virtual_rc_username).map(|id| *id);
+            return Ok(Reply::Content {
+            content: format!(
+                "**Looking up your Virtual RC desk:**\n* Parsed Zulup username: `{:?}`\n* Virtual RC username match: `{:?}`\n* Virtual RC desk id: `{:?}`",
+                parsed,
+                maybe_virtual_rc_username,
+                desk_id
+            ),
+        });
+        }
+
+        return Ok(Reply::Content {
+            content: format!("**Did not find a desk associated with your Zulip username**"),
+        });
+    }
+
+    /// Looks up the associated desk for the zulip username.
+    /// If this user provided a username correction then
+    /// the corrected name will be used to lookup the desk_id instead.
     fn lookup_desk_id(&self, zulip_username: &str) -> Option<usize> {
+        let zulip_username = self.parse_zulip_username(zulip_username);
+        let maybe_virtual_rc_username = self.lookup_corrected_name(&zulip_username);
+
+        if let Ok(desk_owners) = self.desk_owners.read() {
+            desk_owners.get(maybe_virtual_rc_username).map(|id| *id)
+        } else {
+            return None;
+        }
+    }
+
+    /// Looks up the a name correction provided by the user if they called the set_name command
+    /// If no name correction is found, it turnes the original username
+    fn lookup_corrected_name<'a>(&'a self, zulip_username: &'a str) -> &'a str {
+        self.corrected_names
+            .get(zulip_username)
+            .map_or_else(|| zulip_username, |new_name| new_name.as_str())
+    }
+
+    /// Given a recurse Zulip usernmae e.g. Jacob (Jake) Young (he/him) (F2'23)
+    /// parse out the pronoun and batch information to match directly on the name in Virtual RC
+    fn parse_zulip_username(&self, zulip_username: &str) -> String {
         // 1 - Replace the zulip name with a virtual RC name if one was set in corrected_names
         // 2 - With the (new) virtual RC name, try to find an entry in desk_owners.
         // 3 - If one in found, return it
         // 4 - Otherwise, reply with an error (Reply)
-        let re_non_name = Regex::new(
-            format!("{}{}{}", RE_RC_NON_NAME_PARTS, RE_RC_PRONOUNS, RE_RC_BATCH).as_str(),
-        )
-        .unwrap();
-        let zulip_username = re_non_name.replace_all(&zulip_username, "").to_string();
-        let zulip_username = zulip_username.trim();
-        debug!("lookup_desk_id -> replaced_zulip_username = '{zulip_username}'");
-
-        let name = self
-            .corrected_names
-            .get(zulip_username)
-            .map_or(zulip_username, |new_name| new_name.as_str());
-
-        debug!("lookup_desk_id -> zulip_username = {zulip_username} name = {name}");
-        self.desk_owners.get(name).map(|id| *id)
+        let re_non_name =
+            Regex::new(format!("{}{}{}", RE_RC_NAME_PARTS, RE_RC_PRONOUNS, RE_RC_BATCH).as_str())
+                .unwrap();
+        let replaced_name = re_non_name.replace_all(&zulip_username, "").to_string();
+        let replaced_name = replaced_name.trim();
+        debug!("parse_zulip_username -> original_name = '{zulip_username}' to replaced_zulip_username = '{replaced_name}'");
+        replaced_name.into()
     }
 
     /// Parses the input message from the user into one of the known Status Bot commands.
@@ -305,6 +360,10 @@ impl Bot {
                 }
                 // Testing Commands (hidden)
                 "test_missing_desk" => Command::TestMissingDesk,
+                "test_lookup_desk" => {
+                    let zulip_username = Self::fold_splits(splits);
+                    Command::TestLookupDesk(zulip_username)
+                }
                 // Any other words
                 _ => Command::Help,
             };
@@ -444,7 +503,9 @@ pub enum Command {
     Feedback(String),
     SetName(String),
     Help,
+    // Testing Commands (hidden)
     TestMissingDesk,
+    TestLookupDesk(String),
 }
 
 /// Reply represents the Bot's response message to Zulip's outgoing webhook.
@@ -507,6 +568,7 @@ mod tests {
         BOT.get().expect("Bot was not initialized")
     }
 
+    /* Test Command Splitting */
     #[test_case("status" => Command::Help ; "test status command empty")]
     #[test_case("status :apple: watching the Apple keynote <time:2025-01-01T13:00:00-04:00>"
         => Command::Status(Status{
@@ -528,6 +590,35 @@ mod tests {
         bot.parse_cmd(input)
     }
 
+    /* Test Zulip Username Parsing */
+    #[test_case("Jacob Young" => "Jacob Young"; "test simple username")]
+    #[test_case(" Jacob Young  " => "Jacob Young"; "test simple username with spaces")]
+    #[test_case("Ni'ck Berg.son-Shilcock" => "Ni'ck Berg.son-Shilcock"; "test simple username with additional characters")]
+    #[test_case("Jacob -" => "Jacob -" ; "test username no last name")]
+    #[test_case("pseudonym  " => "pseudonym" ; "test username pseudonym with whitespace last name")]
+    #[test_case("Jacob Young (he)" => "Jacob Young" ; "test single pronoun")]
+    #[test_case("Jacob Young (they/them)" => "Jacob Young" ; "test double pronoun")]
+    #[test_case("Jacob Young (he/they/them)" => "Jacob Young" ; "test triple pronoun")]
+    #[test_case("Jacob Young (he/him/they/them)" => "Jacob Young" ; "test quad pronoun")]
+    #[test_case("Jacob Young (W1'19)" => "Jacob Young" ; "test batch W1 19")]
+    #[test_case("Jacob Young (m'20)" => "Jacob Young" ; "test batch m 20")]
+    #[test_case("Jacob Young (Sp1'20)" => "Jacob Young" ; "test batch Sp1 21 lower")]
+    #[test_case("Jacob Young (SP1'20)" => "Jacob Young" ; "test batch SP1 21")]
+    #[test_case("Jacob Young (SP'20)" => "Jacob Young" ; "test batch SP 21")]
+    #[test_case("Jacob Young (F2'23)" => "Jacob Young" ; "test batch F2 23")]
+    #[test_case("Jacob Young (S2'16)" => "Jacob Young" ; "test batch S2 16")]
+    #[test_case("Jacob Young (he/him/they/them) (S2'16)" => "Jacob Young" ; "test pronoun and batch")]
+    #[test_case("Jacob (Jake) Young (Youngie)" => "Jacob (Jake) Young (Youngie)" ; "test nickname or other parenthetical")]
+    #[test_case("Jacöb (Jàke) Young (Youngïe)" => "Jacöb (Jàke) Young (Youngïe)" ; "test nickname with unicode characters")]
+    // #[test_case("" => "" ; "")]
+    // #[test_case("" => "" ; "")]
+    fn test_zulip_username_parsing(input: &str) -> String {
+        init();
+        let bot = get_test_bot();
+        bot.parse_zulip_username(input)
+    }
+
+    /* Test Status Parsing */
     // Empty
     #[test_case("", "", "" => Status{ emoji: None, text: None, expires_at: None }
         ; "test empty status")]
