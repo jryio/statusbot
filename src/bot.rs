@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::str::SplitWhitespace;
 use std::sync::{Arc, RwLock};
 use std::{collections::HashMap, env};
@@ -10,6 +11,7 @@ use crate::{
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use time::macros::format_description;
 use time::{format_description::well_known::Iso8601, OffsetDateTime};
 
 const ZULIP_BOT_EMAIL: &str = "ZULIP_BOT_EMAIL";
@@ -58,6 +60,8 @@ command `set_name {name}`
 
 Bug with Status Bot? Please [create an issue](https://github.com/jryio/statusbot/issues/new) on Github
 "#;
+
+type StatusParts = (Option<String>, Option<String>, Option<OffsetDateTime>);
 
 #[derive(Debug)]
 pub struct Bot {
@@ -178,36 +182,33 @@ impl Bot {
 
         let message = webhook.data;
         let zuid = webhook.message.sender_id;
-        let username = webhook.message.sender_full_name;
-        // TODO: Make parse_cmd return an error, interpret the error string a the message body of a [`Reply`]
+        let zulip_username = webhook.message.sender_full_name;
         let command = self.parse_cmd(&message);
 
-        let rc_username = self.lookup_desk_id(&username);
-        if rc_username == None {
-            debug!("bot -> respond -> lookup_desk_id -> Unable to find a desk for this zulip_username = {username}. Replied with MISSING_DESK text");
-            return Reply::Content {
-                content: MISSING_DESK.into(),
-            };
+        let desk_id = self.lookup_desk_id(&zulip_username);
+        if let Some(desk_id) = desk_id {
+            let result = self.run_command(command, desk_id).await;
+            // TODO: Handle the result of the match. If any cmd methods returned a result, something
+            // went wrong and we should reply to the user with a message saying "Status Bot was unable
+            // to perform <cmd> because of <reason>. If you believe status bot is not working, please
+            // write a Zulip message to <maintianers>"
+            return result.unwrap();
         }
-
-        let result = self.run_command(command, zuid).await;
-
-        // TODO: Handle the result of the match. If any cmd methods returned a result, something
-        // went wrong and we should reply to the user with a message saying "Status Bot was unable
-        // to perform <cmd> because of <reason>. If you believe status bot is not working, please
-        // write a Zulip message to <maintianers>"
-        result.unwrap()
+        debug!("bot -> respond -> lookup_desk_id -> Unable to find a desk for this zulip_username = {zulip_username}. Replied with MISSING_DESK text");
+        return Reply::Content {
+            content: MISSING_DESK.into(),
+        };
     }
 
     /// Runs the function associated with the command
-    async fn run_command(&self, command: Command, zuid: u64) -> Result<Reply> {
+    async fn run_command(&self, command: Command, desk_id: usize) -> Result<Reply> {
         match command {
             Command::Help => self.cmd_help().await,
-            Command::Show => self.cmd_show(zuid).await,
-            Command::Clear => self.cmd_clear(zuid).await,
-            Command::Feedback(f) => self.cmd_feedback(&f).await,
-            Command::SetName(n) => self.cmd_set_name(zuid, n).await,
-            Command::Status(status) => self.cmd_status(zuid, status).await,
+            Command::Show => self.cmd_show(desk_id).await,
+            Command::Clear => self.cmd_clear(desk_id).await,
+            Command::Feedback(feedback) => self.cmd_feedback(&feedback).await,
+            Command::SetName(name) => self.cmd_set_name(desk_id, name).await,
+            Command::Status(status) => self.cmd_status(desk_id, status).await,
             // Testing Commands (hidden)
             Command::TestMissingDesk => self._cmd_test_missing_desk().await,
             Command::TestLookupDesk(name) => self._cmd_test_lookup_desk(name).await,
@@ -215,18 +216,33 @@ impl Bot {
     }
 
     /// `status` - Sets the given status on both Virtual RC and Zulip
-    async fn cmd_status(&self, _zuid: u64, _status: Status) -> Result<Reply> {
+    async fn cmd_status(&self, _desk_id: usize, _status: Status) -> Result<Reply> {
         todo!();
     }
 
     /// `show` - Displays the user's current status on Virtual RC
-    async fn cmd_show(&self, _zuid: u64) -> Result<Reply> {
-        //
-        todo!()
+    async fn cmd_show(&self, desk_id: usize) -> Result<Reply> {
+        // TODO: Make an API request to Virtual RC for the given user
+        match self.rc.get_desk(desk_id).await {
+            Ok(crate::rc::Desk {
+                status,
+                emoji,
+                expires_at,
+                ..
+            }) => {
+                let status = Status::from((emoji, status, expires_at));
+                Ok(Reply::Content {
+                    content: format!("{status}"),
+                })
+            }
+            Err(e) => Ok(Reply::Content {
+                content: e.to_string(),
+            }),
+        }
     }
 
     /// `clear` - Unsets the currents status on Virtual RC and Zulip
-    async fn cmd_clear(&self, _zuid: u64) -> Result<Reply> {
+    async fn cmd_clear(&self, _desk_id: usize) -> Result<Reply> {
         let _empty = Status::default();
         // self.rc.update_desk(empty).await;
         todo!()
@@ -248,8 +264,8 @@ impl Bot {
 
     /// `set_name` - Updates the Zulip user's display name. Used resolving naming issues between
     /// Zulip and Virtual RC.
-    /// TODO: Store this result somewhere other than memory. What options does fly.io give us?
-    async fn cmd_set_name(&self, _zuid: u64, _new_name: String) -> Result<Reply> {
+    async fn cmd_set_name(&self, _desk_id: usize, _new_name: String) -> Result<Reply> {
+        // TODO: Implement set_name
         todo!()
     }
 
@@ -284,28 +300,6 @@ impl Bot {
         return Ok(Reply::Content {
             content: format!("**Did not find a desk associated with your Zulip username**"),
         });
-    }
-
-    /// Looks up the associated desk for the zulip username.
-    /// If this user provided a username correction then
-    /// the corrected name will be used to lookup the desk_id instead.
-    fn lookup_desk_id(&self, zulip_username: &str) -> Option<usize> {
-        let zulip_username = self.parse_zulip_username(zulip_username);
-        let maybe_virtual_rc_username = self.lookup_corrected_name(&zulip_username);
-
-        if let Ok(desk_owners) = self.desk_owners.read() {
-            desk_owners.get(maybe_virtual_rc_username).map(|id| *id)
-        } else {
-            return None;
-        }
-    }
-
-    /// Looks up the a name correction provided by the user if they called the set_name command
-    /// If no name correction is found, it turnes the original username
-    fn lookup_corrected_name<'a>(&'a self, zulip_username: &'a str) -> &'a str {
-        self.corrected_names
-            .get(zulip_username)
-            .map_or_else(|| zulip_username, |new_name| new_name.as_str())
     }
 
     /// Given a recurse Zulip usernmae e.g. Jacob (Jake) Young (he/him) (F2'23)
@@ -389,24 +383,10 @@ impl Bot {
                 if let Some(maybe_alias) = caps.name("emoji") {
                     let maybe_alias = maybe_alias.as_str().trim();
                     debug!("maybe_alias = {maybe_alias}");
-                    // We may get multiple aliases for this emoji (E.g. "first,second")
-                    if let Some(aliases) = self.emojis.0.get(maybe_alias) {
-                        debug!("Got aliases for {maybe_alias} = {aliases}");
-                        // If there is one alias and no ',' we will only get one item
-                        for alias in aliases.split(COMMA) {
-                            debug!("one alias of {maybe_alias} = {alias}");
-                            // If we already successfully set the Status' emoji from a previous
-                            // alias, then we should not overwrite with None if the second alias is
-                            // incorrect for some reason
-                            if status.emoji.is_none() {
-                                let emoji = emojic::parse_alias(alias);
-                                debug!("status has no emoji so we're going to set it. parse_alias for {alias} = {emoji:?}");
-                                status.emoji = emoji.map_or(None, |e| Some(e.grapheme.into()));
-                            }
-                        }
-                    }
-                    // This means we couldn't find a matching emoji alias. Either the user gave us a custom emoji, mispelled it, or we have an out of date zulip emoji.json
-                    else {
+                    status.emoji = self.parse_emoji(maybe_alias);
+                    // This means we couldn't find a matching emoji alias. Either the user gave us
+                    // a custom emoji, mispelled it, or we have an out of date zulip emoji.json
+                    if status.emoji.is_none() {
                         debug!("failed to find alias = {maybe_alias} in out ZulipEmoji");
                     }
                 }
@@ -434,6 +414,48 @@ impl Bot {
         };
     }
 
+    /// Given an input string, attempts to parse the zulip alias :apple: to a unicode character codepoint
+    /// using a custom emoji.json file and the emojic crate
+    fn parse_emoji(&self, maybe_alias: &str) -> Option<String> {
+        let mut result: Option<String> = None;
+        // We may get multiple aliases for this emoji (E.g. "first,second")
+        if let Some(aliases) = self.emojis.0.get(maybe_alias) {
+            // If there is one alias and no ',' we will only get one item
+            for alias in aliases.split(COMMA) {
+                // If we already successfully set the result's emoji from a previous
+                // iteration, then we should not overwrite with None if the second alias is
+                // incorrect for some reason
+                if result.is_none() {
+                    let emoji = emojic::parse_alias(alias);
+                    result = emoji.map_or(None, |e| Some(e.grapheme.into()));
+                }
+            }
+        }
+        result
+    }
+
+    /// Looks up the associated desk for the zulip username.
+    /// If this user provided a username correction then
+    /// the corrected name will be used to lookup the desk_id instead.
+    fn lookup_desk_id(&self, zulip_username: &str) -> Option<usize> {
+        let zulip_username = self.parse_zulip_username(zulip_username);
+        let maybe_virtual_rc_username = self.lookup_corrected_name(&zulip_username);
+
+        if let Ok(desk_owners) = self.desk_owners.read() {
+            desk_owners.get(maybe_virtual_rc_username).map(|id| *id)
+        } else {
+            return None;
+        }
+    }
+
+    /// Looks up the a name correction provided by the user if they called the set_name command
+    /// If no name correction is found, it turnes the original username
+    fn lookup_corrected_name<'a>(&'a self, zulip_username: &'a str) -> &'a str {
+        self.corrected_names
+            .get(zulip_username)
+            .map_or_else(|| zulip_username, |new_name| new_name.as_str())
+    }
+
     /// Collects a SplitsIterator into a String
     fn fold_splits(splits: SplitWhitespace) -> String {
         splits
@@ -447,6 +469,36 @@ impl Bot {
             .into()
     }
 }
+
+/// A Command Status Bot knows about
+#[derive(Debug, PartialEq, Eq)]
+pub enum Command {
+    Status(Status),
+    Show,
+    Clear,
+    Feedback(String),
+    SetName(String),
+    Help,
+    // Testing Commands (hidden)
+    TestMissingDesk,
+    TestLookupDesk(String),
+}
+
+/// Reply represents the Bot's response message to Zulip's outgoing webhook.
+#[derive(Serialize, Debug)]
+#[serde(untagged, rename_all = "snake_case")]
+pub enum Reply {
+    ResponseNotRequired { response_not_required: bool },
+    Content { content: String },
+}
+
+// #[derive(Deserialize, Debug)]
+// #[serde(rename_all = "snake_case")]
+// struct ZulipStatusResponse {
+//     code: Option<String>,
+//     msg: String,
+//     result: String,
+// }
 
 /// A Status is constructed by parsing the message text sent to Status Bot in a direct message
 ///
@@ -494,34 +546,42 @@ pub struct Status {
     pub expires_at: Option<time::OffsetDateTime>,
 }
 
-/// A Command Status Bot knows about
-#[derive(Debug, PartialEq, Eq)]
-pub enum Command {
-    Status(Status),
-    Show,
-    Clear,
-    Feedback(String),
-    SetName(String),
-    Help,
-    // Testing Commands (hidden)
-    TestMissingDesk,
-    TestLookupDesk(String),
+impl Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let emoji = self.emoji.clone().map_or("".into(), |e| e);
+        let text = self.text.clone().map_or("".into(), |t| t);
+        let expires_at = self.expires_at.clone().map_or("".into(), |dt| {
+            dt.format(format_description!(
+                "[year]-[month]-[day]T[hour]:[minute]:[second][offset_hour]:[offset_minute]"
+            ))
+            .map_or("".into(), |ts| format!("<time:{ts}>"))
+        });
+        let mut display = vec![];
+        if emoji != "" {
+            display.push(emoji)
+        }
+        if text != "" {
+            display.push(text)
+        }
+        if expires_at != "" {
+            display.push(expires_at)
+        }
+        let display = display.join(SPACE);
+        let display = display.trim();
+        write!(f, "{display}")
+    }
 }
 
-/// Reply represents the Bot's response message to Zulip's outgoing webhook.
-#[derive(Serialize, Debug)]
-#[serde(untagged, rename_all = "snake_case")]
-pub enum Reply {
-    ResponseNotRequired { response_not_required: bool },
-    Content { content: String },
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
-struct ZulipStatusResponse {
-    code: Option<String>,
-    msg: String,
-    result: String,
+impl From<StatusParts> for Status {
+    fn from(value: StatusParts) -> Self {
+        let (maybe_emoji, maybe_text, maybe_epires_at) = value;
+        Self {
+            // We expect the caller to have already called parse_emoji ehere
+            emoji: maybe_emoji,
+            text: maybe_text,
+            expires_at: maybe_epires_at,
+        }
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -535,6 +595,7 @@ mod tests {
     use hyper_tls::HttpsConnector;
     use test_case::test_case;
     use time::macros::datetime;
+    use time::OffsetDateTime;
 
     use crate::bot::Status;
     use crate::load_env;
@@ -631,6 +692,8 @@ mod tests {
         ; "test single valid emoji flag european union")]
     #[test_case(":this_shortcode_does_not_exist:", "", "" => Status{ emoji: None, text: None, expires_at: None }
         ; "test invalid emoji shortcode")]
+    #[test_case(":custom_zulip_emoji_like_sadparrot:", "", "" => Status{ emoji: None, text: None, expires_at: None }
+        ; "test zulip custom emoji shortcode")]
     #[test_case("apple", "", "" => Status{ emoji: None, text: Some("apple".into()), expires_at: None }
         ; "test emoji name is not interpreted as emoji")]
     #[test_case("::", "", "" => Status{ emoji: None, text: Some("::".into()), expires_at: None }
@@ -676,5 +739,24 @@ mod tests {
         let bot = get_test_bot();
         let input = format!("{emoji} {text} {expires_at}");
         bot.parse_status(input.into())
+    }
+
+    /* Test Status Display */
+    #[test_case(None, None, None => "" ; "test display empty status")]
+    #[test_case(Some(emojic::flat::RED_APPLE.grapheme.into()), None, None => "🍎" ; "test display single emoji status")]
+    #[test_case(None, Some("Setting my status via Status Bot".into()), None => "Setting my status via Status Bot" ; "test display only test status")]
+    #[test_case(None, None, Some(datetime!(2023-11-15 14:00:00 -5)) => "<time:2023-11-15T14:00:00-05:00>" ; "test display only expires_at status")]
+    #[test_case(Some(emojic::flat::RED_APPLE.grapheme.into()), None, Some(datetime!(2023-11-15 14:00:00 -5)) => "🍎 <time:2023-11-15T14:00:00-05:00>" ; "test display emoji and expires_at status")]
+    #[test_case(Some(emojic::flat::RED_APPLE.grapheme.into()), Some("Setting my status via Status Bot".into()), Some(datetime!(2023-11-15 14:00:00 -5)) => "🍎 Setting my status via Status Bot <time:2023-11-15T14:00:00-05:00>" ; "test display emoji, text, and expires_at status")]
+    fn test_status_display(
+        emoji: Option<String>,
+        text: Option<String>,
+        expires_at: Option<OffsetDateTime>,
+    ) -> String {
+        init();
+        let bot = get_test_bot();
+        let status = Status::from((emoji, text, expires_at));
+        // Render status as display
+        format!("{status}")
     }
 }

@@ -124,6 +124,15 @@ impl RecurseClient {
         Ok(desks)
     }
 
+    pub async fn get_desk(&self, desk_id: usize) -> Result<Desk> {
+        let desks = self.get_desks().await?;
+        let mut desks = desks.0.iter();
+        match desks.find(|d| d.id == desk_id) {
+            Some(desk) => Ok(desk.clone()),
+            None => Err(format!("Did not find a Virtual RC desk with id = {desk_id}").into()),
+        }
+    }
+
     /// PATCH /api/desks/:id
     ///
     /// Update the fields of a desk. Can be used to clear a desk's status by passing an empty [`Status`]
@@ -163,13 +172,13 @@ impl RecurseClient {
 /* -------------------------------------------------------------------------- */
 /*                                  Data Types                                */
 /* -------------------------------------------------------------------------- */
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct App {
     name: String,
     id: usize,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum EntityType {
     /// A person using RC Together
     Avatar,
@@ -197,7 +206,7 @@ pub enum EntityType {
 }
 
 /// A string representing where a bot can be facing
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum Direction {
     Up,
@@ -207,13 +216,13 @@ pub enum Direction {
 }
 
 /// The Position of an entity in Virtual RC
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Position {
     pub x: usize,
     pub y: usize,
 }
 /// An Avatar is the circular representation of a person using Virtual RC
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Avatar {
     pub id: usize,
     pub name: String,
@@ -221,7 +230,7 @@ pub struct Avatar {
 }
 
 /// Desk
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
 pub struct Desk {
     /// The Desk ID

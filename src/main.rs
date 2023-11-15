@@ -161,18 +161,11 @@ async fn main() -> Result<()> {
     let file = include_str!("zulip.json");
     let emoji: ZulipEmoji = serde_json::from_str(file).unwrap();
     let client = Client::builder().build::<_, hyper::Body>(https);
+    let bot_singleton = Bot::new(client.clone(), emoji);
+    let bot = Arc::new(bot_singleton);
 
-    let bot = Bot::new(client.clone(), emoji);
-
-    // TODO: Move this to a tokio::spawn background task that never gets canceled
-    // https://stackoverflow.com/questions/66863385/how-can-i-use-tokio-to-trigger-a-function-every-period-or-interval-in-seconds
-
-    let _res = bot.cache_desk_owners().await;
-    // this heap allocates. now Arc<bot> is a pointer
-    let bot = Arc::new(bot);
     let bot_for_background_task = bot.clone();
-
-    let back = task::spawn(async move {
+    let _task_handle = task::spawn(async move {
         let bot = bot_for_background_task.clone();
         let mut interval = tokio::time::interval(
             std::time::Duration::new(DESKS_INTERVAL, 0), /* 5 minutes */
@@ -186,10 +179,11 @@ async fn main() -> Result<()> {
     });
 
     // Define HTTP Service
+    let bot_for_hyper = bot.clone();
     let http_service = make_service_fn(move |_| {
         // Hyper creates a new closure will be created for every incoming connection.
         // Additionally, once a connection is established, there may be multiple HTTP requests.
-        let bot = bot.clone();
+        let bot = bot_for_hyper.clone();
 
         // This is the `Service` that will handle the connection.
         // `service_fn` is a helper to convert a function that
