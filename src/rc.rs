@@ -1,5 +1,9 @@
 use data_encoding::BASE64URL;
-use hyper::{body::HttpBody, http::request::Builder, Body, Method, Request, Response};
+use hyper::{
+    body::{to_bytes, HttpBody},
+    http::request::Builder,
+    Body, Method, Request, Response, StatusCode,
+};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
 use std::env;
@@ -13,8 +17,15 @@ const RC_SITE: &str = "RC_SITE";
 const RC_BOT_ID: &str = "RC_BOT_ID";
 const RC_APP_ID: &str = "RC_APP_ID";
 const RC_APP_SECRET: &str = "RC_APP_SECRET";
-const MAX_RESPONSE_BYES: u64 = 284701 * 8;
+
+const GRID_X_MAX: usize = 169;
+const GRID_X_MIN: usize = 0;
+const GRID_Y_MAX: usize = 109;
+const GRID_Y_MIN: usize = 0;
+
+const MAX_RESPONSE_BYES: u64 = 284701 * 16;
 const AUTHORIZATION: &str = "Authorization";
+
 const BASE_URL: &str = "rctogether.com";
 const API_DESKS: &str = "/api/desks";
 const API_BOTS: &str = "/api/bots";
@@ -85,6 +96,63 @@ impl RecurseClient {
                 AUTHORIZATION,
                 basic,
             )
+            .header("Content-Type", "application/json")
+    }
+
+    /// Given a position in the grid, attempt
+    fn surrounding_positions(&self, pos: &Position) -> Vec<Position> {
+        // Top
+        let top = Position {
+            x: pos.x,
+            y: (pos.y - 1).clamp(GRID_Y_MIN, GRID_Y_MAX),
+        };
+        // Top Left
+        let top_left = Position {
+            x: (pos.x - 1).clamp(GRID_X_MIN, GRID_X_MAX),
+            y: (pos.y - 1).clamp(GRID_Y_MIN, GRID_Y_MAX),
+        };
+        // Top Right
+        let top_right = Position {
+            x: (pos.x + 1).clamp(GRID_X_MIN, GRID_X_MAX),
+            y: (pos.y - 1).clamp(GRID_Y_MIN, GRID_Y_MAX),
+        };
+        // Left
+        let left = Position {
+            x: (pos.x - 1).clamp(GRID_X_MIN, GRID_X_MAX),
+            y: pos.y,
+        };
+        // Right
+        let right = Position {
+            x: (pos.x + 1).clamp(GRID_X_MIN, GRID_X_MAX),
+            y: pos.y,
+        };
+        // Bottom
+        let bottom = Position {
+            x: pos.x,
+            y: (pos.y + 1).clamp(GRID_Y_MIN, GRID_Y_MAX),
+        };
+        // Bottom Left
+        let bottom_left = Position {
+            x: (pos.x - 1).clamp(GRID_X_MIN, GRID_X_MAX),
+            y: (pos.y + 1).clamp(GRID_Y_MIN, GRID_Y_MAX),
+        };
+        // Bottom Right
+        let bottom_right = Position {
+            x: (pos.x + 1).clamp(GRID_X_MIN, GRID_X_MAX),
+            y: (pos.y + 1).clamp(GRID_Y_MIN, GRID_Y_MAX),
+        };
+        // We put left and right at the start of the list of positions because of the common
+        // orientation of RC desks in Virtual RC.
+        vec![
+            left,
+            right,
+            top,
+            top_left,
+            top_right,
+            bottom,
+            bottom_left,
+            bottom_right,
+        ]
     }
 
     /// Given the Response returns the deserialized type T from the JSON body after performing
@@ -93,11 +161,15 @@ impl RecurseClient {
     where
         T: DeserializeOwned,
     {
-        let response_content_length = match response.size_hint().upper() {
+        let response_content_length = match response.body().size_hint().upper() {
             Some(v) => v,
-            None => MAX_RESPONSE_BYES + 1,
+            None => MAX_RESPONSE_BYES,
         };
-        if response_content_length >= MAX_RESPONSE_BYES {
+        if response_content_length > MAX_RESPONSE_BYES {
+            debug!(
+                "RC -> read_json_body -> response_content_length = {:?}",
+                response.size_hint().upper()
+            );
             return Err(
                 format!("Recieved more than {MAX_RESPONSE_BYES} bytes in this response",).into(),
             );
@@ -136,15 +208,55 @@ impl RecurseClient {
     /// PATCH /api/desks/:id
     ///
     /// Update the fields of a desk. Can be used to clear a desk's status by passing an empty [`Status`]
-    pub async fn update_desk(&self, desk_id: u32, status: Status) -> Result<UpdateDeskResponse> {
+    pub async fn update_desk(
+        &self,
+        desk_id: usize,
+        desk_pos: &Position,
+        status: Status,
+    ) -> Result<Desk> {
         let endpoint = format!("{}/{}", API_DESKS, desk_id);
-        let status_json = serde_json::to_string(&status)?;
+        // let status_json = serde_json::to_string(&status)?;
+        let desk_json = json!({
+            "bot_id": self.bot_id,
+            "desk": status,
+        })
+        .to_string();
         let req = self
-            .create_request(Method::PUT, &endpoint)
-            .body(Body::from(status_json))?;
-        let res = self.client.request(req).await?;
-        let updated_desk: UpdateDeskResponse = Self::read_json_body(res).await?;
-        Ok(updated_desk)
+            .create_request(Method::PATCH, &endpoint)
+            .body(Body::from(desk_json))?;
+        debug!("Bot -> update_desk -> request = {:#?}", req);
+        // Before upating a desk, we have to move the StatusBot instance to the correct location
+        // next to the desk. So we try all the surrounding positions.
+        for pos in self.surrounding_positions(desk_pos) {
+            if let Ok(_) = self
+                .update_bot(UpdateBotRequest {
+                    name: None,
+                    emoji: None,
+                    x: Some(pos.x),
+                    y: Some(pos.y),
+                    direction: None,
+                    can_be_mentioned: None,
+                })
+                .await
+            {
+                match self.client.request(req).await {
+                    Ok(res) => match Self::read_json_body::<Desk>(res).await {
+                        Ok(updated_desk) => {
+                            return Ok(updated_desk);
+                        }
+                        Err(e) => {
+                            debug!("RC -> update_desk -> found surrounding pos -> update_desk call -> deserialize error = {e}");
+                            return Err(e);
+                        }
+                    },
+                    Err(e) => {
+                        debug!("RC -> update_desk -> found surrounding pos -> update_desk call -> network error = {e}");
+                        return Err(e.into());
+                    }
+                }
+            }
+        }
+        Err(format!("Bot was unable to find an open grid position next to desk (id = {desk_id}, pos = {desk_pos:?})").into())
     }
 
     /// PATCH /api/bots/:id
@@ -156,16 +268,37 @@ impl RecurseClient {
         });
         let req = self
             .create_request(Method::PATCH, &format!("{}/{}", API_BOTS, self.bot_id))
-            .body(body.to_string().into())?;
+            .body(Body::from(body.to_string()))?;
+        debug!("Bot -> update_bot -> request = {:#?}", req);
 
         let res = self.client.request(req).await?;
-        debug!("Recurse Client -> update_bot -> response = {res:?}");
-        // TODO: Need to handle what happens with the coordinates given are occupied.
-        // The response in this case is
-        // HTTP 422 - "{ "pos": [ "must not be in a block" ] }"
-        // Should perform a directional search around the position until we find an open slotrc
-        let updated_bot: UpdateBotResponse = Self::read_json_body(res).await?;
-        Ok(updated_bot)
+        let result = match res.status() {
+            StatusCode::OK => {
+                let updated_bot: UpdateBotResponse = Self::read_json_body(res).await?;
+                // let updated_bot = UpdateBotResponse(Bot {
+                //     id: 0,
+                //     pos: Position { x: 0, y: 0 },
+                //     r#type: "".into(),
+                //     name: "".into(),
+                //     message: None,
+                //     display_name: "".into(),
+                //     emoji: "".into(),
+                //     can_be_mentioned: false,
+                //     direction: "".into(),
+                //     app: App {
+                //         name: "".into(),
+                //         id: 0,
+                //     },
+                // });
+                Ok(updated_bot)
+            }
+            StatusCode::UNPROCESSABLE_ENTITY => Err("Must not be in a block".into()),
+            _ => Err("Unknown error while trying to update bot".into()),
+        };
+        // let bytes = to_bytes(res.into_body()).await?;
+        // let body_str = String::from_utf8(bytes.to_vec()).unwrap();
+        // debug!("Recurse Client -> update_bot -> response = {body_str:#?}");
+        result
     }
 }
 
@@ -260,14 +393,27 @@ pub struct Desk {
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
+pub struct Message {
+    pub text: String,
+    pub sent_at: String,
+    pub mentioned_agent_ids: Vec<usize>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
 pub struct Bot {
+    pub id: usize,
+    pub r#type: String,
+    pub name: String,
     pub display_name: String,
     pub emoji: String,
     pub direction: String,
     pub can_be_mentioned: bool,
+    pub pos: Position,
     pub app: App,
+    pub message: Option<Message>,
     /* messge: Option<Message> is the last message sent by this bot. Since this bot does not send
-     * messages, this field shoudl always be null */
+     * messages, this field should always be null */
 }
 
 /* -------------------------------------------------------------------------- */
@@ -280,11 +426,17 @@ pub struct Bot {
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub struct UpdateBotRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub emoji: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub x: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub y: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub direction: Option<Direction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub can_be_mentioned: Option<bool>,
 }
 
