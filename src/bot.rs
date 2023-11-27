@@ -3,7 +3,7 @@ use std::str::SplitWhitespace;
 use std::sync::{Arc, RwLock};
 use std::{collections::HashMap, env};
 
-use crate::rc::{Desk, Position, UpdateDeskResponse};
+use crate::rc::{Desk, Position};
 use crate::{
     rc::RecurseClient,
     secret::Secret,
@@ -12,7 +12,7 @@ use crate::{
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use time::{format_description::well_known::Iso8601, OffsetDateTime};
+use time::{format_description::well_known::Iso8601, Duration, OffsetDateTime};
 
 const ZULIP_BOT_EMAIL: &str = "ZULIP_BOT_EMAIL";
 const ZULIP_BOT_API_KEY: &str = "ZULIP_BOT_API_KEY";
@@ -46,7 +46,7 @@ const HELP_TEXT: &str = r#"**How to use Status Bot**:
     * Custom emojis are not supported (:sadparrot:)
   * `{status}` (optional) - Status message for others to see
     * Cannot contain `<` or `>` characters
-  * `{expires_at}` optional - The expiration time for the status
+  * `{expires_at}` optional - The expiration time for the status (default 30m)
     * Expiration should be set using zulip's [<time> selector](https://zulip.com/help/global-times)
     * Choose a time in the future!
   * `status :crab: Rewriting Status Bot in Rust <time:2025-01-01T10:00:00-04:00>`
@@ -62,6 +62,7 @@ command `set_name {name}`
 Bug with Status Bot? Please [create an issue](https://github.com/jryio/statusbot/issues/new) on Github
 "#;
 
+/// Maybe(Emoji) , Maybe(Status), Maybe(ExpiresAt)
 type StatusParts = (Option<String>, Option<String>, Option<OffsetDateTime>);
 
 #[derive(Debug)]
@@ -215,7 +216,7 @@ impl Bot {
         match command {
             Command::Help => self.cmd_help().await,
             Command::Show => self.cmd_show(desk_id).await,
-            Command::Clear => self.cmd_clear(desk_id).await,
+            Command::Clear => self.cmd_clear(desk_id, desk_position).await,
             Command::Feedback(feedback) => self.cmd_feedback(&feedback).await,
             Command::SetName(rc_username) => self.cmd_set_name(zulip_username, rc_username).await,
             Command::Status(status) => self.cmd_status(desk_id, desk_position, status).await,
@@ -281,9 +282,9 @@ impl Bot {
     }
 
     /// `clear` - Unsets the currents status on Virtual RC and Zulip
-    async fn cmd_clear(&self, _desk_id: usize) -> Result<Reply> {
-        let _empty = Status::default();
-        // self.rc.update_desk(empty).await;
+    async fn cmd_clear(&self, desk_id: usize, desk_position: &Position) -> Result<Reply> {
+        let empty = Status::default();
+        self.rc.update_desk(desk_id, desk_position, empty).await;
         todo!()
     }
 
@@ -442,7 +443,9 @@ impl Bot {
 
     /// Handles the different valid combinations to construct a  [`Status`]
     fn parse_status(&self, input: String) -> Status {
-        let mut status = Status::default();
+        let mut maybe_emoji: Option<String> = None;
+        let mut maybe_status: Option<String> = None;
+        let mut maybe_expires_at: Option<OffsetDateTime> = None;
         let re_status = format!(r"{}\s?{}\s?{}", RE_EMOJI, RE_STATUS, RE_TIME);
         let re_status = Regex::new(&re_status).unwrap();
 
@@ -451,28 +454,28 @@ impl Bot {
                 if let Some(maybe_alias) = caps.name("emoji") {
                     let maybe_alias = maybe_alias.as_str().trim();
                     debug!("maybe_alias = {maybe_alias}");
-                    status.emoji = self.parse_emoji(maybe_alias);
+                    maybe_emoji = self.parse_emoji(maybe_alias);
                     // This means we couldn't find a matching emoji alias. Either the user gave us
                     // a custom emoji, mispelled it, or we have an out of date zulip emoji.json
-                    if status.emoji.is_none() {
+                    if maybe_emoji.is_none() {
                         debug!("failed to find alias = {maybe_alias} in out ZulipEmoji");
                     }
                 }
 
                 if let Some(s) = caps.name("status") {
                     let s = s.as_str().trim();
-                    status.status = if s.len() > 0 { Some(s.into()) } else { None };
+                    maybe_status = if s.len() > 0 { Some(s.into()) } else { None };
                 }
 
                 // TODO: Don't allow expirations in the past!
                 if let Some(maybe_iso8061) = caps.name("iso8061") {
                     let maybe_iso8061 = maybe_iso8061.as_str().trim();
                     if let Ok(date_time) = OffsetDateTime::parse(maybe_iso8061, &Iso8601::DEFAULT) {
-                        status.expires_at = Some(date_time);
+                        maybe_expires_at = Some(date_time);
                     }
                 }
 
-                status
+                Status::from((maybe_emoji, maybe_status, maybe_expires_at))
             }
             None => Status::default(),
         };
@@ -622,6 +625,11 @@ pub struct Status {
     pub expires_at: Option<time::OffsetDateTime>,
 }
 
+impl Status {
+    /// The deafult expiration time for a status (when none is provided)
+    const DEFAULT_EXPIRES_AT: Duration = Duration::new(1800 /* 30 minutes */, 0);
+}
+
 impl Display for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let emoji = self.emoji.clone().map_or("".into(), |e| e);
@@ -649,11 +657,18 @@ impl Display for Status {
 impl From<StatusParts> for Status {
     fn from(value: StatusParts) -> Self {
         let (maybe_emoji, maybe_status, maybe_epires_at) = value;
+        // Vritual RC requires an expires_at time if there is also a status
+        let expires_at = if maybe_status.is_some() && maybe_epires_at.is_none() {
+            // Returns None if the added time exceeds Date::MAX
+            OffsetDateTime::now_utc().checked_add(Self::DEFAULT_EXPIRES_AT)
+        } else {
+            maybe_epires_at
+        };
         Self {
             // We expect the caller to have already called parse_emoji ehere
             emoji: maybe_emoji,
             status: maybe_status,
-            expires_at: maybe_epires_at,
+            expires_at,
         }
     }
 }
