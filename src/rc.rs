@@ -1,34 +1,12 @@
 use data_encoding::BASE64URL;
-use hyper::{
-    body::{to_bytes, HttpBody},
-    http::request::Builder,
-    Body, Method, Request, Response, StatusCode,
-};
+use hyper::{body::HttpBody, http::request::Builder, Body, Method, Request, Response, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
 use std::env;
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::{bot::Status, secret::Secret, HttpsClient, Result};
-
-// An example response length multiplied by 8 produces a maximum length of 2.2Mb response
-const RC_SITE: &str = "RC_SITE";
-const RC_BOT_ID: &str = "RC_BOT_ID";
-const RC_APP_ID: &str = "RC_APP_ID";
-const RC_APP_SECRET: &str = "RC_APP_SECRET";
-
-const GRID_X_MAX: usize = 169;
-const GRID_X_MIN: usize = 0;
-const GRID_Y_MAX: usize = 109;
-const GRID_Y_MIN: usize = 0;
-
-const MAX_RESPONSE_BYES: u64 = 284701 * 16;
-const AUTHORIZATION: &str = "Authorization";
-
-const BASE_URL: &str = "rctogether.com";
-const API_DESKS: &str = "/api/desks";
-const API_BOTS: &str = "/api/bots";
+use crate::{bot::Status, consts::*, secret::Secret, HttpsClient, Result};
 
 #[derive(Debug)]
 /// Recurse Client makes API requets to Virtual RC
@@ -221,10 +199,10 @@ impl RecurseClient {
             "desk": status,
         })
         .to_string();
-        let req = self
+        let req_update_desk = self
             .create_request(Method::PATCH, &endpoint)
             .body(Body::from(desk_json))?;
-        debug!("Bot -> update_desk -> request = {:#?}", req);
+        debug!("Bot -> update_desk -> request = {:#?}", req_update_desk);
         // Before upating a desk, we have to move the StatusBot instance to the correct location
         // next to the desk. So we try all the surrounding positions.
         for pos in self.surrounding_positions(desk_pos) {
@@ -239,14 +217,35 @@ impl RecurseClient {
                 })
                 .await
             {
-                match self.client.request(req).await {
-                    Ok(res) => match Self::read_json_body::<Desk>(res).await {
-                        Ok(updated_desk) => {
-                            return Ok(updated_desk);
+                match self.client.request(req_update_desk).await {
+                    Ok(res) => match res.status() {
+                        StatusCode::OK => match Self::read_json_body::<Desk>(res).await {
+                            Ok(updated_desk) => {
+                                return Ok(updated_desk);
+                            }
+                            Err(e) => {
+                                debug!("RC -> update_desk -> found surrounding pos -> update_desk -> deserialize error = {e}");
+                                return Err(e);
+                            }
+                        },
+                        StatusCode::UNPROCESSABLE_ENTITY => {
+                            debug!("RC -> update_desk -> HTTP 422 -> Request was invalid");
+                            return Err("The request had an invalid JSON body and the Virtual RC API rejected it".into());
                         }
-                        Err(e) => {
-                            debug!("RC -> update_desk -> found surrounding pos -> update_desk call -> deserialize error = {e}");
-                            return Err(e);
+                        StatusCode::BAD_REQUEST => {
+                            return Err("The request was invalid in some way and the Vritual RC API rejected it".into());
+                        }
+                        StatusCode::INTERNAL_SERVER_ERROR => {
+                            return Err(
+                                "The Virtual RC API fell over becuase of our request".into()
+                            );
+                        }
+                        // All other status codes
+                        status @ _ => {
+                            return Err(format!(
+                                "The Vritual RC API returned an unkown HTTP header value: {status}"
+                            )
+                            .into());
                         }
                     },
                     Err(e) => {
@@ -257,6 +256,28 @@ impl RecurseClient {
             }
         }
         Err(format!("Bot was unable to find an open grid position next to desk (id = {desk_id}, pos = {desk_pos:?})").into())
+    }
+
+    /// PATCH /api/desks/:id/cleanup
+    ///
+    /// This endpoint will clear the values of a desks's status, emoji, and expires_at
+    pub async fn cleanup_desk(&self, desk_id: usize) -> Result<Desk> {
+        // TODO: Unfortunately this endpoint removes the owner of the desk as well.
+        // It can't be used until this behavior is patch on API side.
+        let endpoint = format!("{}/{}/{}", API_DESKS, desk_id, DESKS_CLEANUP);
+        let body_json = json!({
+            "bot_id": self.bot_id,
+        })
+        .to_string();
+        let req_cleanup_desk = self
+            .create_request(Method::PATCH, &endpoint)
+            .body(Body::from(body_json))?;
+        match self.client.request(req_cleanup_desk).await {
+            Ok(res) => Self::read_json_body::<Desk>(res).await.map_err(|err| {
+                format!("Failed to deserialize response from {endpoint}. Err = {err}").into()
+            }),
+            Err(e) => Err(format!("Request to {endpoint} failed with error = {e}").into()),
+        }
     }
 
     /// PATCH /api/bots/:id
@@ -423,7 +444,7 @@ pub struct Bot {
 /// A request body for PATCH /api/bots/:id
 ///
 /// When making the request, all fields will be children of the "bot" field in the JSON
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct UpdateBotRequest {
     #[serde(skip_serializing_if = "Option::is_none")]

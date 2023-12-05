@@ -3,9 +3,10 @@ use std::str::SplitWhitespace;
 use std::sync::{Arc, RwLock};
 use std::{collections::HashMap, env};
 
-use crate::rc::{Desk, Position};
+use crate::rc::{UpdateBotRequest, UpdateBotResponse};
 use crate::{
-    rc::RecurseClient,
+    consts::*,
+    rc::{Desk, Position, RecurseClient},
     secret::Secret,
     zulip::{OutgoingWebhook, Trigger, ZulipEmoji},
     HttpsClient, Result,
@@ -14,58 +15,11 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use time::{format_description::well_known::Iso8601, Duration, OffsetDateTime};
 
-const ZULIP_BOT_EMAIL: &str = "ZULIP_BOT_EMAIL";
-const ZULIP_BOT_API_KEY: &str = "ZULIP_BOT_API_KEY";
-const ZULIP_BOT_API_TOKEN: &str = "ZULIP_BOT_API_TOKEN";
-const ZULIP_SITE: &str = "ZULIP_SITE";
-
-const SPACE: &str = " ";
-const COMMA: &str = ",";
-
-// This regex will match (pronouns)?(batch)? but not the name section
-const RE_RC_PRONOUNS: &str = r"(?<pronouns>\([a-z/]+\))?";
-const RE_RC_BATCH: &str = r"(\((W|SP|Sp|S|F|m)\d?'\d{2}\))?";
-const RE_RC_NAME_PARTS: &str = r".*?";
-
-// Combined = (:(.+?):)?([^<>\r\n\t]+)?(<time:(.+?)>)?
-const RE_EMOJI: &str = "(:(?<emoji>.+?):)?";
-const RE_STATUS: &str = "(?<status>[^<>\r\n\t]+)?";
-const RE_TIME: &str = "(<time:(?<iso8061>.+?)>)?";
-
-const EMPTY_STATUS: &str = r"Your status is empty";
-const MISSING_DESK: &str = r#"**Unable to a find a desk in Vritual RC asssociated with your username**
-* Make sure you have [claimed a desk](https://recurse.notion.site/RC-Together-User-Guide-695cc163c76c47449347bd97a6842c3b) in Virutal RC
-* If your Zulip username does not match your Virtual RC username... (ignoring the (pronouns) and (batch) parentheticals)
-  * Fix username mismatch between Zulip <-> Virtual RC by using command `set_name {name}` with Status Bot
-  * `set_name {name}` Tell Status Bot your Virtual RC username
-* If Status Bot still cannot find your desk in Virtual RC, please [create an issue](https://github.com/jryio/statusbot/issues/new) on Github
-"#;
-const HELP_TEXT: &str = r#"**How to use Status Bot**:
-* `status {emoji} {text} {expires_at}` Set your status
-  * `{emoji}` (optional) - A unicode emoji
-    * Custom emojis are not supported (:sadparrot:)
-  * `{status}` (optional) - Status message for others to see
-    * Cannot contain `<` or `>` characters
-  * `{expires_at}` optional - The expiration time for the status (default 30m)
-    * Expiration should be set using zulip's [<time> selector](https://zulip.com/help/global-times)
-    * Choose a time in the future!
-  * `status :crab: Rewriting Status Bot in Rust <time:2025-01-01T10:00:00-04:00>`
-* `show` Display your current status
-* `clear` Clear your status
-* `feedback {text}` Provide anonymous feedback to the Status Bot maintainer(s)
-* `help` Print help message
-
-Note: Status Bot uses your Zulip username to match your Virtual RC username. If you're having
-trouble setting your status you can tell Status Bot what your Virtual RC name is with the
-command `set_name {name}`
-
-Bug with Status Bot? Please [create an issue](https://github.com/jryio/statusbot/issues/new) on Github
-"#;
-
 /// Maybe(Emoji) , Maybe(Status), Maybe(ExpiresAt)
 type StatusParts = (Option<String>, Option<String>, Option<OffsetDateTime>);
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct Bot {
     /// A Hyper HttpsClient
     client: HttpsClient,
@@ -93,6 +47,8 @@ pub struct Bot {
     /// The URL of the Zulip Instance
     /// E.g. https://<subdoamin>.zulipchat.com
     site: Secret,
+    /// Home position of the Bot
+    home: Position,
 }
 
 impl Bot {
@@ -107,6 +63,11 @@ impl Bot {
         let api_token =
             env::var(ZULIP_BOT_API_TOKEN).expect("ZULIP_BOT_API_TOKEN is not set in the .env file");
         let site = env::var(ZULIP_SITE).expect("ZULIP_SITE is not set in the .env file");
+        let home_x = env::var(BOT_HOME_X).expect("RC_BOT_HOME_X is not set in the .env file");
+        let home_y = env::var(BOT_HOME_Y).expect("RC_BOT_HOME_Y is not set in the .env file");
+        let x: usize = home_x.parse().expect("RC_BOT_HOME_X must be a number");
+        let y: usize = home_y.parse().expect("RC_BOT_HOME_Y must be a number");
+        let home = Position { x, y };
 
         Bot {
             client,
@@ -118,6 +79,7 @@ impl Bot {
             api_key: Secret(api_key.into()),
             api_token: Secret(api_token.into()),
             site: Secret(site.into()),
+            home,
         }
     }
 
@@ -187,17 +149,27 @@ impl Bot {
         let zulip_username = webhook.message.sender_full_name;
         let command = self.parse_cmd(&message);
 
-        let pair = self.lookup_desk_id(&zulip_username);
-        if let Some(pair) = pair {
-            let (desk_id, desk_position) = pair;
-            let result = self
+        let entry = self.lookup_desk_id(&zulip_username);
+        if let Some(entry) = entry {
+            let (desk_id, desk_position) = entry;
+            return match self
                 .run_command(command, desk_id, &desk_position, &zulip_username)
-                .await;
+                .await
+            {
+                Ok(reply) => {
+                    if let Err(e) = self.send_bot_home().await {
+                        error!("Failed to send the bot home. Err = {e}");
+                    }
+                    reply
+                }
+                Err(e) => Reply::Content {
+                    content: format!("Status Bot failed to perform your request :(\nPlease report this error to the Status Bot maintainer(s)\nError: {e}"),
+                },
+            };
             // TODO: Handle the result of the match. If any cmd methods returned a result, something
             // went wrong and we should reply to the user with a message saying "Status Bot was unable
             // to perform <cmd> because of <reason>. If you believe status bot is not working, please
             // write a Zulip message to <maintianers>"
-            return result.unwrap();
         }
         debug!("bot -> respond -> lookup_desk_id -> Unable to find a desk for this zulip_username = {zulip_username}. Replied with MISSING_DESK text");
         return Reply::Content {
@@ -224,6 +196,7 @@ impl Bot {
             // Testing Commands (hidden)
             Command::TestMissingDesk => self._cmd_test_missing_desk().await,
             Command::TestLookupDesk(name) => self._cmd_test_lookup_desk(name).await,
+            Command::TestSendHome => self._cmd_test_send_home().await,
         }
     }
 
@@ -257,7 +230,6 @@ impl Bot {
 
     /// `show` - Displays the user's current status on Virtual RC
     async fn cmd_show(&self, desk_id: usize) -> Result<Reply> {
-        // TODO: Make an API request to Virtual RC for the given user
         match self.rc.get_desk(desk_id).await {
             Ok(crate::rc::Desk {
                 status,
@@ -284,7 +256,8 @@ impl Bot {
     /// `clear` - Unsets the currents status on Virtual RC and Zulip
     async fn cmd_clear(&self, desk_id: usize, desk_position: &Position) -> Result<Reply> {
         let empty = Status::default();
-        self.rc.update_desk(desk_id, desk_position, empty).await;
+        // TODO: Update this to clear a status when the API is fixed
+        let _ = self.rc.update_desk(desk_id, desk_position, empty).await;
         todo!()
     }
 
@@ -331,7 +304,7 @@ impl Bot {
         }
     }
 
-    /// Testing Function to return MISSING_DESK help text
+    /// Testing function to return MISSING_DESK help text
     async fn _cmd_test_missing_desk(&self) -> Result<Reply> {
         debug!(
             "Command::TestMissingDesk -> MISSING_DESK = {}",
@@ -342,6 +315,7 @@ impl Bot {
         })
     }
 
+    /// Testing function to lookup a desk by a Zulip username
     async fn _cmd_test_lookup_desk(&self, zulip_username: String) -> Result<Reply> {
         debug!("Command::TestLookupDesk -> zulip_username = {zulip_username}");
         let parsed = self.parse_zulip_username(&zulip_username);
@@ -364,6 +338,31 @@ impl Bot {
         return Ok(Reply::Content {
             content: format!("**Did not find a desk associated with your Zulip username**"),
         });
+    }
+
+    /// Testing function that sends status bot to its home location
+    async fn _cmd_test_send_home(&self) -> Result<Reply> {
+        match self.send_bot_home().await {
+            Ok(_) => Ok(Reply::Content {
+                content: "Sent bot home".into(),
+            }),
+            Err(e) => Ok(Reply::Content {
+                content: format!("Failed to to send bot home: {e}"),
+            }),
+        }
+    }
+
+    /// Testing function that sends Status Bot to any location
+    async fn _cmd_test_send_pos(&self) -> Result<Reply> {
+        todo!()
+    }
+
+    /// Sends the bot to the known home position
+    async fn send_bot_home(&self) -> Result<UpdateBotResponse> {
+        let mut req = UpdateBotRequest::default();
+        req.x = Some(self.home.x);
+        req.y = Some(self.home.y);
+        self.rc.update_bot(req).await
     }
 
     /// Given a recurse Zulip usernmae e.g. Jacob (Jake) Young (he/him) (F2'23)
@@ -427,6 +426,7 @@ impl Bot {
                     let zulip_username = Self::fold_splits(splits);
                     Command::TestLookupDesk(zulip_username)
                 }
+                "test_send_home" => Command::TestSendHome,
                 // Any other words
                 _ => Command::Help,
             };
@@ -467,7 +467,6 @@ impl Bot {
                     maybe_status = if s.len() > 0 { Some(s.into()) } else { None };
                 }
 
-                // TODO: Don't allow expirations in the past!
                 if let Some(maybe_iso8061) = caps.name("iso8061") {
                     let maybe_iso8061 = maybe_iso8061.as_str().trim();
                     if let Ok(date_time) = OffsetDateTime::parse(maybe_iso8061, &Iso8601::DEFAULT) {
@@ -556,6 +555,7 @@ pub enum Command {
     // Testing Commands (hidden)
     TestMissingDesk,
     TestLookupDesk(String),
+    TestSendHome,
 }
 
 /// Reply represents the Bot's response message to Zulip's outgoing webhook.

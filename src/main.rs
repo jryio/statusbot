@@ -1,10 +1,8 @@
-// FIX: Remove this crate-level lint disable
-#![allow(dead_code)]
-
 // -----------------
 // Crate Modules
 // -----------------
 mod bot;
+mod consts;
 mod rc;
 mod secret;
 mod zulip;
@@ -22,19 +20,15 @@ extern crate log;
 // -----------------
 use crate::{
     bot::Bot,
+    consts::*,
     zulip::{OutgoingWebhook, ZulipEmoji},
 };
-use ::time::Duration;
 use hyper::{
     service::{make_service_fn, service_fn},
     Body, Client, Method, Request, Response, Server, StatusCode,
 };
 use hyper_tls::HttpsConnector;
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    sync::{Arc, RwLock},
-};
+use std::{net::SocketAddr, sync::Arc};
 use tokio::task;
 
 // -----------------
@@ -43,21 +37,6 @@ use tokio::task;
 type GenericError = Box<dyn std::error::Error + Send + Sync>;
 type Result<T> = std::result::Result<T, GenericError>;
 type HttpsClient = Client<hyper_tls::HttpsConnector<hyper::client::HttpConnector>>;
-
-// -----------------
-// Constants
-// -----------------
-const ENV_DEVEL: &str = ".env.devel";
-const ENV_PROD: &str = ".env.prod";
-const RUN_MODE: &str = "RUN_MODE";
-const PROD: &str = "PROD";
-const DEVEL: &str = "DEVEL";
-const SERVER_DOMAIN: &str = "SERVER_DOMAIN";
-const SERVER_PORT: &str = "SERVER_PORT";
-const DESKS_INTERVAL: u64 = 1 * 60; /* 1 minutes */
-const NOTFOUND: &str = "NOT FOUND";
-const ROOT: &str = "/";
-const STATUS_ENDPOINT: &str = "/status";
 
 /// Match the incoming HTTP request Method and URI and call the corresponding handler
 ///
