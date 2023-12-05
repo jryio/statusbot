@@ -92,8 +92,6 @@ async fn handle_post_status(req: Request<Body>, bot: Arc<Bot>) -> Result<Respons
     let reply_json = serde_json::to_string(&reply)?;
     let response = response.body(reply_json.into())?;
 
-    println!("response for POST /status {response:?}");
-
     Ok(response)
 }
 

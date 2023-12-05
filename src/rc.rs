@@ -258,27 +258,27 @@ impl RecurseClient {
         Err(format!("Bot was unable to find an open grid position next to desk (id = {desk_id}, pos = {desk_pos:?})").into())
     }
 
+    // TODO: Unfortunately this endpoint removes the owner of the desk as well.
+    // It can't be used until this behavior is patch on API side.
     /// PATCH /api/desks/:id/cleanup
     ///
     /// This endpoint will clear the values of a desks's status, emoji, and expires_at
-    pub async fn cleanup_desk(&self, desk_id: usize) -> Result<Desk> {
-        // TODO: Unfortunately this endpoint removes the owner of the desk as well.
-        // It can't be used until this behavior is patch on API side.
-        let endpoint = format!("{}/{}/{}", API_DESKS, desk_id, DESKS_CLEANUP);
-        let body_json = json!({
-            "bot_id": self.bot_id,
-        })
-        .to_string();
-        let req_cleanup_desk = self
-            .create_request(Method::PATCH, &endpoint)
-            .body(Body::from(body_json))?;
-        match self.client.request(req_cleanup_desk).await {
-            Ok(res) => Self::read_json_body::<Desk>(res).await.map_err(|err| {
-                format!("Failed to deserialize response from {endpoint}. Err = {err}").into()
-            }),
-            Err(e) => Err(format!("Request to {endpoint} failed with error = {e}").into()),
-        }
-    }
+    // pub async fn cleanup_desk(&self, desk_id: usize) -> Result<Desk> {
+    //     let endpoint = format!("{}/{}/{}", API_DESKS, desk_id, DESKS_CLEANUP);
+    //     let body_json = json!({
+    //         "bot_id": self.bot_id,
+    //     })
+    //     .to_string();
+    //     let req_cleanup_desk = self
+    //         .create_request(Method::PATCH, &endpoint)
+    //         .body(Body::from(body_json))?;
+    //     match self.client.request(req_cleanup_desk).await {
+    //         Ok(res) => Self::read_json_body::<Desk>(res).await.map_err(|err| {
+    //             format!("Failed to deserialize response from {endpoint}. Err = {err}").into()
+    //         }),
+    //         Err(e) => Err(format!("Request to {endpoint} failed with error = {e}").into()),
+    //     }
+    // }
 
     /// PATCH /api/bots/:id
     ///

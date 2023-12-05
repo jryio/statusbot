@@ -188,8 +188,11 @@ impl Bot {
         match command {
             Command::Help => self.cmd_help().await,
             Command::Show => self.cmd_show(desk_id).await,
-            Command::Clear => self.cmd_clear(desk_id, desk_position).await,
-            Command::Feedback(feedback) => self.cmd_feedback(&feedback).await,
+            // TODO: Enable clear when the RC API gets patched
+            // Command::Clear => self.cmd_clear(desk_id, desk_position).await,
+            Command::Clear => self.cmd_help().await,
+            // Command::Feedback(feedback) => self.cmd_feedback(&feedback).await,
+            Command::Feedback(_) => self.cmd_help().await,
             Command::SetName(rc_username) => self.cmd_set_name(zulip_username, rc_username).await,
             Command::Status(status) => self.cmd_status(desk_id, desk_position, status).await,
             Command::ClearName => self.cmd_clear_name(zulip_username).await,
@@ -254,9 +257,9 @@ impl Bot {
     }
 
     /// `clear` - Unsets the currents status on Virtual RC and Zulip
+    // TODO: Update this to clear a status when the API is fixed
     async fn cmd_clear(&self, desk_id: usize, desk_position: &Position) -> Result<Reply> {
         let empty = Status::default();
-        // TODO: Update this to clear a status when the API is fixed
         let _ = self.rc.update_desk(desk_id, desk_position, empty).await;
         todo!()
     }
@@ -383,7 +386,6 @@ impl Bot {
 
     /// Parses the input message from the user into one of the known Status Bot commands.
     /// If no command can be parsed, the help command is run showing help text
-    // TODO: Make parse_cmd return an error, interpret the error string a the message body of a [`Reply`]
     fn parse_cmd(&self, message: &str) -> Command {
         // If the message is empty or entirely whitespace, the iterator will yield None
         // split_whitespace() will also handle \t \n and other unicode whitespaces
@@ -393,14 +395,15 @@ impl Bot {
             return match first {
                 "help" => Command::Help,
                 "show" => Command::Show,
-                "clear" => Command::Clear,
-                "feedback" => {
-                    let feedback = Self::parse_feedback(splits);
-                    match feedback.len() {
-                        0 => Command::Help,
-                        _ => Command::Feedback(feedback),
-                    }
-                }
+                // TODO: Enable clear when RC API gets fixed
+                // "clear" => Command::Clear,
+                // "feedback" => {
+                //     let feedback = Self::parse_feedback(splits);
+                //     match feedback.len() {
+                //         0 => Command::Help,
+                //         _ => Command::Feedback(feedback),
+                //     }
+                // }
                 "status" => {
                     // Check if we received any of the optional arguments for status
                     let input = Self::fold_splits(splits.clone());
@@ -730,8 +733,8 @@ mod tests {
     #[test_case("help" => Command::Help ; "test help command")]
     #[test_case("show" => Command::Show ; "test show command")]
     #[test_case("feedback" => Command::Help ; "test feedback empty gives help command")]
-    #[test_case("feedback this bot sucks" => Command::Feedback("this bot sucks".into()) ; "test feedback")]
-    #[test_case("clear" => Command::Clear ; "test clear command")]
+    #[test_case("feedback this bot sucks" => Command::Help ; "test feedback")]
+    #[test_case("clear" => Command::Help ; "test clear command")]
     #[test_case("random" => Command::Help ; "test invalid command gives help command")]
     #[test_case("" => Command::Help ; "test empty input gives help command")]
     fn test_commmand_splitting(input: &str) -> Command {

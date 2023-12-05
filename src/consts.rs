@@ -27,7 +27,6 @@ pub const AUTHORIZATION: &str = "Authorization";
 
 pub const API_DESKS: &str = "/api/desks";
 pub const API_BOTS: &str = "/api/bots";
-pub const DESKS_CLEANUP: &str = "cleanup";
 
 /* Bot */
 pub const ZULIP_BOT_EMAIL: &str = "ZULIP_BOT_EMAIL";
@@ -58,6 +57,9 @@ pub const MISSING_DESK: &str = r#"**Unable to a find a desk in Vritual RC asssoc
   * `set_name {name}` Tell Status Bot your Virtual RC username
 * If Status Bot still cannot find your desk in Virtual RC, please [create an issue](https://github.com/jryio/statusbot/issues/new) on Github
 "#;
+// Missing text:
+// * `clear` Clear your status
+// * `feedback {text}` Provide anonymous feedback to the Status Bot maintainer(s)
 pub const HELP_TEXT: &str = r#"**How to use Status Bot**:
 * `status {emoji} {text} {expires_at}` Set your status
   * `{emoji}` (optional) - A unicode emoji
@@ -69,8 +71,6 @@ pub const HELP_TEXT: &str = r#"**How to use Status Bot**:
     * Choose a time in the future!
   * `status :crab: Rewriting Status Bot in Rust <time:2025-01-01T10:00:00-04:00>`
 * `show` Display your current status
-* `clear` Clear your status
-* `feedback {text}` Provide anonymous feedback to the Status Bot maintainer(s)
 * `help` Print help message
 
 Note: Status Bot uses your Zulip username to match your Virtual RC username. If you're having
