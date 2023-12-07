@@ -25,6 +25,8 @@ pub struct Bot {
     client: HttpsClient,
     /// A [`ZulipEmoji`] HashMap from zulip emoji alias to standard emoji alias
     emojis: ZulipEmoji,
+    /// An inverted [`ZulipEmoji`] HashMap from unicode grapheme to zulip emoji aliases
+    emojis_inv: ZulipEmoji,
     /// [Virtual RC Owner.Name] -> [Virtual RC Desk.ID]
     ///
     /// Zuliup usernames are used to looup in this table. Maybe not be a perfect match
@@ -68,10 +70,25 @@ impl Bot {
         let x: usize = home_x.parse().expect("RC_BOT_HOME_X must be a number");
         let y: usize = home_y.parse().expect("RC_BOT_HOME_Y must be a number");
         let home = Position { x, y };
+        // This is a janky inversion of the emoji hashmap so instead of sending unicode back to
+        // Zulip, we send the Zulip emoji alias
+        let emojis_inv = ZulipEmoji(HashMap::from_iter(
+            emojis
+                .0
+                .iter()
+                .filter(|(_z_alias, u_alias)| emojic::parse_alias(u_alias).is_some())
+                .map(|(z_alias, u_alias)| {
+                    (
+                        emojic::parse_alias(u_alias).unwrap().grapheme.to_string(),
+                        format!(":{z_alias}:"),
+                    )
+                }),
+        ));
 
         Bot {
             client,
             emojis,
+            emojis_inv,
             desk_owners,
             corrected_names,
             rc,
@@ -97,7 +114,7 @@ impl Bot {
         //  API (recurse.rctogether.com/api/desks)
         let desks = self.rc.get_desks().await?;
 
-        info!("bot -> cache_desk_owners -> GET desks");
+        debug!("bot -> cache_desk_owners -> GET desks");
 
         let x = desks
             .0
@@ -117,7 +134,7 @@ impl Bot {
 
         if let Ok(mut d_o) = self.desk_owners.write() {
             *d_o = x;
-            info!("bot -> cache_desk_owners -> successfully got the write lock for desk_owners and updated");
+            debug!("bot -> cache_desk_owners -> successfully got the write lock for desk_owners and updated");
         }
 
         Ok(())
@@ -219,9 +236,18 @@ impl Bot {
                     expires_at,
                     ..
                 } = desk;
+                if let Some(e) = emoji.clone() {
+                    if let Some(zulip_alias) = self.emojis_inv.0.get(&e) {
+                        let status = Status::from((Some(zulip_alias.clone()), status, expires_at));
+                        return Ok(Reply::Content {
+                            content: format!("**:check: Updated your status**: {status}"),
+                        });
+                    }
+                }
+
                 let status = Status::from((emoji, status, expires_at));
                 Ok(Reply::Content {
-                    content: format!("**Updated your status**: {status}"),
+                    content: format!("**:check: Updated your status**: {status}"),
                 })
             }
             Err(e) => {
@@ -240,8 +266,16 @@ impl Bot {
                 expires_at,
                 ..
             }) => {
-                let status = Status::from((emoji, status, expires_at));
-                let status_str = format!("{status}");
+                let mut s = Status::from((emoji.clone(), status.clone(), expires_at.clone()));
+                // Intercept the unicode character and replace it with the Zulip alias,
+                // because Zulip does not seem to be able to render the raw unicode when the
+                // server is running in Docker Debian container
+                if let Some(e) = emoji {
+                    if let Some(zulip_alias) = self.emojis_inv.0.get(&e) {
+                        s = Status::from((Some(zulip_alias.clone()), status, expires_at));
+                    }
+                }
+                let status_str = format!("{s}");
                 Ok(Reply::Content {
                     content: if status_str == "" {
                         EMPTY_STATUS.into()
@@ -497,6 +531,7 @@ impl Bot {
                 if result.is_none() {
                     let emoji = emojic::parse_alias(alias);
                     result = emoji.map_or(None, |e| Some(e.grapheme.into()));
+                    debug!("EMOJI MATCH = {result:?}");
                 }
             }
         }

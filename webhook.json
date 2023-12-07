@@ -1,20 +1,20 @@
 {
-  "bot_email": "outgoing-bot@localhost",
-  "bot_full_name": "Outgoing webhook test",
-  "data": "@**Outgoing webhook test** Zulip is the world\u2019s most productive group chat!",
+  "bot_email": "status1-bot@zulipchat.com",
+  "bot_full_name": "Status Bot",
+  "data": "show",
   "message": {
     "avatar_url": "https://secure.gravatar.com/avatar/1f4f1575bf002ae562fea8fc4b861b09?d=identicon&version=1",
     "client": "website",
-    "content": "@**Outgoing webhook test** Zulip is the world\u2019s most productive group chat!",
+    "content": "show",
     "content_type": "text/x-markdown",
     "display_recipient": "Verona",
     "id": 112,
     "is_me_message": false,
     "reactions": [],
     "recipient_id": 20,
-    "rendered_content": "<p><span class=\"user-mention\" data-user-id=\"25\">@Outgoing webhook test</span> Zulip is the world\u2019s most productive group chat!</p>",
+    "rendered_content": "<p>show</p>",
     "sender_email": "iago@zulip.com",
-    "sender_full_name": "Iago",
+    "sender_full_name": "Jacob Young",
     "sender_id": 5,
     "sender_realm_str": "zulip",
     "stream_id": 5,
@@ -22,8 +22,8 @@
     "submessages": [],
     "timestamp": 1527876931,
     "topic_links": [],
-    "type": "stream"
+    "type": "private"
   },
   "token": "xvOzfurIutdRRVLzpXrIIHXJvNfaJLJ0",
-  "trigger": "mention"
+  "trigger": "direct_message"
 }

@@ -2,3 +2,12 @@
 # It will increase our image's context size if we do and slow down build and
 # startup times.
 /target
+
+# Additionally we do not want to include any .env files because they contain
+# secrets. Instead use fly secrets import
+.env
+.env.prod
+.env.devel
+env
+env.prod
+env.devel

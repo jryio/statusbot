@@ -2,6 +2,7 @@
 pub const ENV_DEVEL: &str = ".env.devel";
 pub const ENV_PROD: &str = ".env.prod";
 pub const RUN_MODE: &str = "RUN_MODE";
+pub const FLY_APP_NAME: &str = "FLY_APP_NAME";
 pub const PROD: &str = "PROD";
 pub const DEVEL: &str = "DEVEL";
 pub const SERVER_DOMAIN: &str = "SERVER_DOMAIN";

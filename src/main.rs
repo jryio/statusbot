@@ -97,6 +97,9 @@ async fn handle_post_status(req: Request<Body>, bot: Arc<Bot>) -> Result<Respons
 
 /// Loads the correct .env file based on the the RUN_MODE envrionment variable
 ///
+/// NOTE: This only occurs when developing locally.
+/// Production env variables are loaded via `fly secrets import`
+///
 /// If RUN_MODE is set to PROD, the .env.prod is loaded
 ///
 /// If RUN_MODE is set to DEVEL, then .env.devel is loaded
@@ -111,10 +114,20 @@ fn load_env() {
         },
         Err(_) => ENV_DEVEL,
     };
-    match dotenv::from_filename(env_file) {
-        Ok(_path) => info!("Loaded {env_file} file successfully"),
-        Err(e) => error!("Failed to load {env_file} file with error = {e:?}"),
-    };
+    // Only load the .env files directly if we are NOT running in FLY
+    //
+    match std::env::var(FLY_APP_NAME) {
+        Ok(_) => {
+            info!("Inside fly.io, loading variables from environment")
+        }
+        Err(_) => {
+            info!("Not running in PROD on Fly.io");
+            match dotenv::from_filename(env_file) {
+                Ok(_path) => info!("Loaded {env_file} file successfully"),
+                Err(e) => error!("Failed to load {env_file} file with error = {e:?}"),
+            };
+        }
+    }
 }
 
 fn make_address() -> SocketAddr {
@@ -151,7 +164,8 @@ async fn main() -> Result<()> {
         loop {
             interval.tick().await;
             // go here after 5 minutes
-            let _ = bot.cache_desk_owners().await;
+            let res = bot.cache_desk_owners().await;
+            debug!("cache_desk_owners result = {res:?}");
         }
     });
 
